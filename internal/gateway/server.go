@@ -49,6 +49,7 @@ type Server struct {
 	oauthHandler            *httpapi.OAuthHandler            // OAuth endpoints
 	filesHandler            *httpapi.FilesHandler            // workspace file serving
 	agentStore         store.AgentStore             // for context injection in tools_invoke
+	msgBus             *bus.MessageBus              // for MCP bridge media delivery
 
 	upgrader    websocket.Upgrader
 	rateLimiter *RateLimiter
@@ -213,7 +214,7 @@ func (s *Server) BuildMux() *http.ServeMux {
 	// Protected by gateway token when configured.
 	// Agent context (X-Agent-ID, X-User-ID) is injected from request headers.
 	if s.tools != nil {
-		bridgeHandler := mcpbridge.NewBridgeServer(s.tools, "1.0.0")
+		bridgeHandler := mcpbridge.NewBridgeServer(s.tools, "1.0.0", s.msgBus)
 		var handler http.Handler = bridgeContextMiddleware(s.cfg.Gateway.Token, bridgeHandler)
 		if s.cfg.Gateway.Token != "" {
 			handler = tokenAuthMiddleware(s.cfg.Gateway.Token, handler)
@@ -400,6 +401,9 @@ func (s *Server) SetFilesHandler(h *httpapi.FilesHandler) { s.filesHandler = h }
 
 // SetAgentStore sets the agent store for context injection in tools_invoke.
 func (s *Server) SetAgentStore(as store.AgentStore) { s.agentStore = as }
+
+// SetMessageBus sets the message bus for MCP bridge media delivery.
+func (s *Server) SetMessageBus(mb *bus.MessageBus) { s.msgBus = mb }
 
 // SetVersion sets the server version for health responses.
 func (s *Server) SetVersion(v string) { s.version = v }
