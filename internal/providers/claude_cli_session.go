@@ -26,7 +26,8 @@ func validateCLIModel(model string) error {
 }
 
 // buildArgs constructs CLI arguments.
-func (p *ClaudeCLIProvider) buildArgs(model, workDir string, cliSessionID uuid.UUID, outputFormat string, hasImages, disableTools bool) []string {
+// mcpConfigPath is the resolved per-session MCP config file (may differ per call).
+func (p *ClaudeCLIProvider) buildArgs(model, workDir, mcpConfigPath string, cliSessionID uuid.UUID, outputFormat string, hasImages, disableTools bool) []string {
 	args := []string{
 		"-p",
 		"--output-format", outputFormat,
@@ -35,8 +36,8 @@ func (p *ClaudeCLIProvider) buildArgs(model, workDir string, cliSessionID uuid.U
 		"--verbose",
 	}
 
-	if p.mcpConfigPath != "" {
-		args = append(args, "--mcp-config", p.mcpConfigPath)
+	if mcpConfigPath != "" {
+		args = append(args, "--mcp-config", mcpConfigPath)
 	}
 
 	// Session persistence: check if CLI session file exists on disk.
@@ -56,7 +57,7 @@ func (p *ClaudeCLIProvider) buildArgs(model, workDir string, cliSessionID uuid.U
 	if disableTools {
 		// Summoner: disable all tools entirely via disallowedTools
 		args = append(args, "--disallowedTools", "Bash,Edit,Read,Write,Glob,Grep,WebFetch,WebSearch,TodoRead,TodoWrite,NotebookRead,NotebookEdit")
-	} else if p.mcpConfigPath != "" {
+	} else if mcpConfigPath != "" {
 		// Chat with MCP bridge: disable CLI built-in tools, only allow MCP bridge tools.
 		// This ensures all tool execution goes through GoClaw's controlled MCP bridge.
 		args = append(args, "--disallowedTools", "Bash,Edit,Read,Write,Glob,Grep,WebFetch,WebSearch,TodoRead,TodoWrite,NotebookRead,NotebookEdit")
@@ -69,13 +70,24 @@ func (p *ClaudeCLIProvider) buildArgs(model, workDir string, cliSessionID uuid.U
 	return args
 }
 
+// resolveMCPConfigPath returns the MCP config file path for this call.
+// If mcpConfigData is set (managed mode), writes a per-session config with agent context.
+// Otherwise falls back to the legacy global mcpConfigPath.
+func (p *ClaudeCLIProvider) resolveMCPConfigPath(sessionKey, agentID, userID string) string {
+	if p.mcpConfigData != nil {
+		path := p.mcpConfigData.WriteMCPConfig(sessionKey, agentID, userID)
+		if path != "" {
+			p.mcpConfigDirs.Store(filepath.Dir(path), struct{}{})
+		}
+		return path
+	}
+	return p.mcpConfigPath
+}
+
 // ensureWorkDir creates and returns a stable work directory for the given session key.
 func (p *ClaudeCLIProvider) ensureWorkDir(sessionKey string) string {
-	if sessionKey == "" {
-		sessionKey = "default"
-	}
-	// Sanitize session key for filesystem
-	safe := strings.NewReplacer(":", "-", "/", "-", "\\", "-").Replace(sessionKey)
+	// Sanitize session key for filesystem safety (path traversal, null bytes, length)
+	safe := sanitizePathSegment(sessionKey)
 	dir := filepath.Join(p.baseWorkDir, safe)
 
 	p.mu.Lock()
@@ -117,6 +129,32 @@ func extractFromMessages(msgs []Message) (systemPrompt, userMsg string, images [
 		}
 	}
 	return
+}
+
+// extractAgentID gets agent_id from Options map.
+func extractAgentID(opts map[string]interface{}) string {
+	if opts == nil {
+		return ""
+	}
+	if v, ok := opts[OptAgentID]; ok {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return ""
+}
+
+// extractUserID gets user_id from Options map.
+func extractUserID(opts map[string]interface{}) string {
+	if opts == nil {
+		return ""
+	}
+	if v, ok := opts[OptUserID]; ok {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return ""
 }
 
 // extractDisableTools checks if disable_tools is set to true in Options.

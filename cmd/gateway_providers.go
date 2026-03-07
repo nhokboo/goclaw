@@ -156,12 +156,8 @@ func registerProvidersFromDB(registry *providers.Registry, provStore store.Provi
 			var cliOpts []providers.ClaudeCLIOption
 			cliOpts = append(cliOpts, providers.WithClaudeCLISecurityHooks("", true))
 			if gatewayAddr != "" {
-				mcpPath, mcpCleanup, mcpErr := providers.BuildCLIMCPConfig(nil, gatewayAddr, gatewayToken)
-				if mcpErr != nil {
-					slog.Warn("failed to build MCP config for db claude-cli", "error", mcpErr)
-				} else if mcpPath != "" {
-					cliOpts = append(cliOpts, providers.WithClaudeCLIMCPConfig(mcpPath, mcpCleanup))
-				}
+				mcpData := providers.BuildCLIMCPConfigData(nil, gatewayAddr, gatewayToken)
+				cliOpts = append(cliOpts, providers.WithClaudeCLIMCPConfigData(mcpData))
 			}
 			registry.Register(providers.NewClaudeCLIProvider(cliPath, cliOpts...))
 			slog.Info("registered provider from DB", "name", p.Name)

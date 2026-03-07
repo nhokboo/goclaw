@@ -36,7 +36,8 @@ func (p *ClaudeCLIProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRes
 
 	cliSessionID := deriveSessionUUID(sessionKey)
 	disableTools := extractDisableTools(req.Options)
-	args := p.buildArgs(model, workDir, cliSessionID, "json", len(images) > 0, disableTools)
+	mcpPath := p.resolveMCPConfigPath(sessionKey, extractAgentID(req.Options), extractUserID(req.Options))
+	args := p.buildArgs(model, workDir, mcpPath, cliSessionID, "json", len(images) > 0, disableTools)
 
 	var stdin *bytes.Reader
 	if len(images) > 0 {
@@ -91,7 +92,8 @@ func (p *ClaudeCLIProvider) ChatStream(ctx context.Context, req ChatRequest, onC
 
 	cliSessionID := deriveSessionUUID(sessionKey)
 	disableToolsStream := extractDisableTools(req.Options)
-	args := p.buildArgs(model, workDir, cliSessionID, "stream-json", len(images) > 0, disableToolsStream)
+	mcpPathStream := p.resolveMCPConfigPath(sessionKey, extractAgentID(req.Options), extractUserID(req.Options))
+	args := p.buildArgs(model, workDir, mcpPathStream, cliSessionID, "stream-json", len(images) > 0, disableToolsStream)
 
 	var stdin *bytes.Reader
 	if len(images) > 0 {

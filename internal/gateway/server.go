@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 
 	"github.com/nextlevelbuilder/goclaw/internal/agent"
@@ -18,6 +19,7 @@ import (
 	httpapi "github.com/nextlevelbuilder/goclaw/internal/http"
 	mcpbridge "github.com/nextlevelbuilder/goclaw/internal/mcp"
 	"github.com/nextlevelbuilder/goclaw/internal/permissions"
+	"github.com/nextlevelbuilder/goclaw/internal/providers"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 	"github.com/nextlevelbuilder/goclaw/internal/tools"
 	"github.com/nextlevelbuilder/goclaw/pkg/protocol"
@@ -202,18 +204,56 @@ func (s *Server) BuildMux() *http.ServeMux {
 	// MCP bridge: expose GoClaw tools to Claude CLI via streamable-http.
 	// Only listens on localhost (CLI runs on the same machine).
 	// Protected by gateway token when configured.
+	// Agent context (X-Agent-ID, X-User-ID) is injected from request headers.
 	if s.tools != nil {
 		bridgeHandler := mcpbridge.NewBridgeServer(s.tools, "1.0.0")
+		var handler http.Handler = bridgeContextMiddleware(s.cfg.Gateway.Token, bridgeHandler)
 		if s.cfg.Gateway.Token != "" {
-			mux.Handle("/mcp/bridge", tokenAuthMiddleware(s.cfg.Gateway.Token, bridgeHandler))
+			handler = tokenAuthMiddleware(s.cfg.Gateway.Token, handler)
 		} else {
 			slog.Warn("security.mcp_bridge: no gateway token configured, MCP bridge tools are unauthenticated")
-			mux.Handle("/mcp/bridge", bridgeHandler)
 		}
+		mux.Handle("/mcp/bridge", handler)
 	}
 
 	s.mux = mux
 	return mux
+}
+
+// bridgeContextMiddleware extracts X-Agent-ID and X-User-ID headers from the
+// MCP bridge request and injects them into the context so bridge tools can
+// access agent/user scope. When a gateway token is configured, the context
+// headers must be accompanied by a valid X-Bridge-Sig HMAC to prevent forgery.
+func bridgeContextMiddleware(gatewayToken string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		agentIDStr := r.Header.Get("X-Agent-ID")
+		userID := r.Header.Get("X-User-ID")
+
+		if agentIDStr != "" || userID != "" {
+			// Verify HMAC signature when gateway token is configured
+			if gatewayToken != "" {
+				sig := r.Header.Get("X-Bridge-Sig")
+				if !providers.VerifyBridgeContext(gatewayToken, agentIDStr, userID, sig) {
+					slog.Warn("security.mcp_bridge: invalid bridge context signature",
+						"agent_id", agentIDStr, "user_id", userID)
+					http.Error(w, `{"error":"invalid bridge context signature"}`, http.StatusForbidden)
+					return
+				}
+			}
+
+			if agentIDStr != "" {
+				if id, err := uuid.Parse(agentIDStr); err == nil {
+					ctx = store.WithAgentID(ctx, id)
+				}
+			}
+			if userID != "" {
+				ctx = store.WithUserID(ctx, userID)
+			}
+		}
+
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
 }
 
 // tokenAuthMiddleware wraps an http.Handler with Bearer token authentication.

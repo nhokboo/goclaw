@@ -427,6 +427,8 @@ func (l *Loop) runLoop(ctx context.Context, req RunRequest) (*RunResult, error) 
 				providers.OptMaxTokens:   8192,
 				providers.OptTemperature: 0.7,
 				providers.OptSessionKey:  req.SessionKey,
+				providers.OptAgentID:     l.agentUUID.String(),
+				providers.OptUserID:      req.UserID,
 			},
 		}
 		if l.thinkingLevel != "" && l.thinkingLevel != "off" {

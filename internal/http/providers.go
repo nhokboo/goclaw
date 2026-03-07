@@ -81,12 +81,8 @@ func (h *ProvidersHandler) registerInMemory(p *store.LLMProviderData) {
 		var cliOpts []providers.ClaudeCLIOption
 		cliOpts = append(cliOpts, providers.WithClaudeCLISecurityHooks("", true))
 		if h.gatewayAddr != "" {
-			mcpPath, mcpCleanup, mcpErr := providers.BuildCLIMCPConfig(nil, h.gatewayAddr, h.token)
-			if mcpErr != nil {
-				slog.Warn("failed to build MCP config for in-memory claude-cli", "error", mcpErr)
-			} else if mcpPath != "" {
-				cliOpts = append(cliOpts, providers.WithClaudeCLIMCPConfig(mcpPath, mcpCleanup))
-			}
+			mcpData := providers.BuildCLIMCPConfigData(nil, h.gatewayAddr, h.token)
+			cliOpts = append(cliOpts, providers.WithClaudeCLIMCPConfigData(mcpData))
 		}
 		h.providerReg.Register(providers.NewClaudeCLIProvider(cliPath, cliOpts...))
 		return
@@ -222,14 +218,6 @@ func (h *ProvidersHandler) handleUpdateProvider(w http.ResponseWriter, r *http.R
 		}
 	}
 
-	// Validate provider_type if being updated
-	if pt, ok := updates["provider_type"]; ok {
-		if s, _ := pt.(string); !store.ValidProviderTypes[s] {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unsupported provider_type"})
-			return
-		}
-	}
-
 	// Strip masked API key — don't overwrite real value with "***"
 	if apiKey, ok := updates["api_key"]; ok {
 		if s, _ := apiKey.(string); s == "***" || s == "" {
@@ -240,6 +228,15 @@ func (h *ProvidersHandler) handleUpdateProvider(w http.ResponseWriter, r *http.R
 	// Prevent updating immutable fields
 	delete(updates, "id")
 	delete(updates, "created_at")
+	delete(updates, "provider_type")
+
+	// Track old name before update for registry cleanup
+	var oldName string
+	if h.providerReg != nil {
+		if old, err := h.store.GetProvider(r.Context(), id); err == nil {
+			oldName = old.Name
+		}
+	}
 
 	if err := h.store.UpdateProvider(r.Context(), id, updates); err != nil {
 		slog.Error("providers.update", "error", err)
@@ -250,6 +247,10 @@ func (h *ProvidersHandler) handleUpdateProvider(w http.ResponseWriter, r *http.R
 	// Sync in-memory registry with updated provider
 	if h.providerReg != nil {
 		if updated, err := h.store.GetProvider(r.Context(), id); err == nil {
+			// Unregister old name if renamed to prevent ghost entries
+			if oldName != "" && oldName != updated.Name {
+				h.providerReg.Unregister(oldName)
+			}
 			if !updated.Enabled {
 				h.providerReg.Unregister(updated.Name)
 			} else {
