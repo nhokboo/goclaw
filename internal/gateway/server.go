@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -46,6 +47,7 @@ type Server struct {
 	delegationsHandler      *httpapi.DelegationsHandler      // delegation history API
 	builtinToolsHandler     *httpapi.BuiltinToolsHandler     // builtin tool management API
 	oauthHandler            *httpapi.OAuthHandler            // OAuth endpoints
+	filesHandler            *httpapi.FilesHandler            // workspace file serving
 	agentStore         store.AgentStore             // for context injection in tools_invoke
 
 	upgrader    websocket.Upgrader
@@ -196,6 +198,11 @@ func (s *Server) BuildMux() *http.ServeMux {
 		s.builtinToolsHandler.RegisterRoutes(mux)
 	}
 
+	// Workspace file serving (available in all modes)
+	if s.filesHandler != nil {
+		s.filesHandler.RegisterRoutes(mux)
+	}
+
 	// OAuth endpoints (available in all modes)
 	if s.oauthHandler != nil {
 		s.oauthHandler.RegisterRoutes(mux)
@@ -287,7 +294,7 @@ func (s *Server) Start(ctx context.Context) error {
 		s.httpServer.Shutdown(shutdownCtx)
 	}()
 
-	if err := s.httpServer.ListenAndServe(); err != http.ErrServerClosed {
+	if err := s.httpServer.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("gateway server: %w", err)
 	}
 	return nil
@@ -376,6 +383,9 @@ func (s *Server) SetBuiltinToolsHandler(h *httpapi.BuiltinToolsHandler) {
 
 // SetOAuthHandler sets the OAuth handler (available in all modes).
 func (s *Server) SetOAuthHandler(h *httpapi.OAuthHandler) { s.oauthHandler = h }
+
+// SetFilesHandler sets the workspace file serving handler.
+func (s *Server) SetFilesHandler(h *httpapi.FilesHandler) { s.filesHandler = h }
 
 // SetAgentStore sets the agent store for context injection in tools_invoke.
 func (s *Server) SetAgentStore(as store.AgentStore) { s.agentStore = as }
