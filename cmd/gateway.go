@@ -346,6 +346,10 @@ func runGateway() {
 		initOTelExporter(context.Background(), cfg, traceCollector)
 	}
 
+	// Redis cache: compiled via build tags. Build with 'go build -tags redis' to enable.
+	redisClient := initRedisClient(cfg)
+	defer shutdownRedis(redisClient)
+
 	// Wire cron retry config from config.json
 	cronRetryCfg := cfg.Cron.ToRetryConfig()
 	// Apply retry config via type assertion on the concrete cron store.
@@ -574,7 +578,11 @@ func runGateway() {
 		}
 	}
 
-	contextFileInterceptor, delegateMgr = wireExtras(pgStores, agentRouter, providerRegistry, msgBus, pgStores.Sessions, toolsReg, toolPE, skillsLoader, hasMemory, traceCollector, workspace, cfg.Gateway.InjectionAction, cfg, sandboxMgr, dynamicLoader)
+	var mcpPool *mcpbridge.Pool
+	contextFileInterceptor, delegateMgr, mcpPool = wireExtras(pgStores, agentRouter, providerRegistry, msgBus, pgStores.Sessions, toolsReg, toolPE, skillsLoader, hasMemory, traceCollector, workspace, cfg.Gateway.InjectionAction, cfg, sandboxMgr, dynamicLoader, redisClient)
+	if mcpPool != nil {
+		defer mcpPool.Stop()
+	}
 	gatewayAddr := loopbackAddr(cfg.Gateway.Host, cfg.Gateway.Port)
 	var mcpToolLister httpapi.MCPToolLister
 	if mcpMgr != nil {

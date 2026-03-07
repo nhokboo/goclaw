@@ -11,6 +11,7 @@ import (
 	"github.com/nextlevelbuilder/goclaw/internal/config"
 	"github.com/nextlevelbuilder/goclaw/internal/hooks"
 	httpapi "github.com/nextlevelbuilder/goclaw/internal/http"
+	mcpbridge "github.com/nextlevelbuilder/goclaw/internal/mcp"
 	"github.com/nextlevelbuilder/goclaw/internal/providers"
 	"github.com/nextlevelbuilder/goclaw/internal/sandbox"
 	"github.com/nextlevelbuilder/goclaw/internal/skills"
@@ -43,18 +44,22 @@ func wireExtras(
 	appCfg *config.Config,
 	sandboxMgr sandbox.Manager,
 	dynamicLoader *tools.DynamicToolLoader,
-) (*tools.ContextFileInterceptor, *tools.DelegateManager) {
-	// 1. Context file interceptor (created before resolver so callbacks can reference it)
+	redisClient any, // nil when built without -tags redis or when Redis is unconfigured
+) (*tools.ContextFileInterceptor, *tools.DelegateManager, *mcpbridge.Pool) {
+	// 1. Build cache instances (in-memory or Redis depending on build tags)
+	agentCtxCache, userCtxCache, gwCache := makeCaches(redisClient)
+
+	// 1a. Context file interceptor (created before resolver so callbacks can reference it)
 	var contextFileInterceptor *tools.ContextFileInterceptor
 	var delegateMgr *tools.DelegateManager
 	if stores.Agents != nil {
-		contextFileInterceptor = tools.NewContextFileInterceptor(stores.Agents, workspace)
+		contextFileInterceptor = tools.NewContextFileInterceptor(stores.Agents, workspace, agentCtxCache, userCtxCache)
 	}
 
 	// 1b. Group writer cache (wraps ListGroupFileWriters with TTL cache)
 	var groupWriterCache *store.GroupWriterCache
 	if stores.Agents != nil {
-		groupWriterCache = store.NewGroupWriterCache(stores.Agents)
+		groupWriterCache = store.NewGroupWriterCache(stores.Agents, gwCache)
 	}
 
 	// 2. User seeding callback: seeds per-user context files on first chat
@@ -82,7 +87,13 @@ func wireExtras(
 		}
 	}
 
-	// 5. Set up agent resolver: lazy-creates Loops from DB
+	// 5. Shared MCP connection pool (eliminates duplicate connections across agents)
+	var mcpPool *mcpbridge.Pool
+	if stores.MCP != nil {
+		mcpPool = mcpbridge.NewPool()
+	}
+
+	// 6. Set up agent resolver: lazy-creates Loops from DB
 	var skillAccessStore store.SkillAccessStore
 	if sas, ok := stores.Skills.(store.SkillAccessStore); ok {
 		skillAccessStore = sas
@@ -114,6 +125,7 @@ func wireExtras(
 		TeamStore:              stores.Teams,
 		BuiltinToolStore:       stores.BuiltinTools,
 		MCPStore:               stores.MCP,
+		MCPPool:                mcpPool,
 		GroupWriterCache:       groupWriterCache,
 		OnEvent: func(event agent.AgentEvent) {
 			msgBus.Broadcast(bus.Event{
@@ -470,7 +482,7 @@ func wireExtras(
 	}
 
 	slog.Info("resolver + interceptors + cache subscribers wired")
-	return contextFileInterceptor, delegateMgr
+	return contextFileInterceptor, delegateMgr, mcpPool
 }
 
 // wireHTTP creates HTTP handlers (agents + skills + traces + MCP + custom tools + channel instances + providers + delegations + builtin tools).
