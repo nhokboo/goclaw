@@ -259,6 +259,17 @@ func bridgeContextMiddleware(gatewayToken string, next http.Handler) http.Handle
 			}
 		}
 
+		// Inject channel routing context for tools like message, cron, etc.
+		if channel := r.Header.Get("X-Channel"); channel != "" {
+			ctx = tools.WithToolChannel(ctx, channel)
+		}
+		if chatID := r.Header.Get("X-Chat-ID"); chatID != "" {
+			ctx = tools.WithToolChatID(ctx, chatID)
+		}
+		if peerKind := r.Header.Get("X-Peer-Kind"); peerKind != "" {
+			ctx = tools.WithToolPeerKind(ctx, peerKind)
+		}
+
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

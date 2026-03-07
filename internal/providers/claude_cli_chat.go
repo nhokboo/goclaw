@@ -36,7 +36,14 @@ func (p *ClaudeCLIProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRes
 
 	cliSessionID := deriveSessionUUID(sessionKey)
 	disableTools := extractDisableTools(req.Options)
-	mcpPath := p.resolveMCPConfigPath(sessionKey, extractAgentID(req.Options), extractUserID(req.Options))
+	bc := BridgeContext{
+		AgentID:  extractAgentID(req.Options),
+		UserID:   extractUserID(req.Options),
+		Channel:  extractChannel(req.Options),
+		ChatID:   extractChatID(req.Options),
+		PeerKind: extractPeerKind(req.Options),
+	}
+	mcpPath := p.resolveMCPConfigPath(sessionKey, bc)
 	args := p.buildArgs(model, workDir, mcpPath, cliSessionID, "json", len(images) > 0, disableTools)
 
 	var stdin *bytes.Reader
@@ -92,7 +99,14 @@ func (p *ClaudeCLIProvider) ChatStream(ctx context.Context, req ChatRequest, onC
 
 	cliSessionID := deriveSessionUUID(sessionKey)
 	disableToolsStream := extractDisableTools(req.Options)
-	mcpPathStream := p.resolveMCPConfigPath(sessionKey, extractAgentID(req.Options), extractUserID(req.Options))
+	bcStream := BridgeContext{
+		AgentID:  extractAgentID(req.Options),
+		UserID:   extractUserID(req.Options),
+		Channel:  extractChannel(req.Options),
+		ChatID:   extractChatID(req.Options),
+		PeerKind: extractPeerKind(req.Options),
+	}
+	mcpPathStream := p.resolveMCPConfigPath(sessionKey, bcStream)
 	args := p.buildArgs(model, workDir, mcpPathStream, cliSessionID, "stream-json", len(images) > 0, disableToolsStream)
 
 	var stdin *bytes.Reader

@@ -97,11 +97,24 @@ func mcpConfigBaseDir() string {
 	return filepath.Join(home, ".goclaw", "mcp-configs")
 }
 
+// BridgeContext holds per-call context for MCP bridge headers.
+type BridgeContext struct {
+	AgentID  string
+	UserID   string
+	Channel  string
+	ChatID   string
+	PeerKind string
+}
+
 // WriteMCPConfig writes a per-session MCP config file with agent context headers.
 // Files are stored at ~/.goclaw/mcp-configs/<safe-session-key>/mcp-config.json,
 // outside the agent's workDir so tokens are not exposed.
 // Skips write if content is unchanged. Returns the file path.
-func (d *MCPConfigData) WriteMCPConfig(sessionKey, agentID, userID string) string {
+func (d *MCPConfigData) WriteMCPConfig(sessionKey string, bc BridgeContext) string {
+	return d.writeMCPConfigInternal(sessionKey, bc.AgentID, bc.UserID, bc.Channel, bc.ChatID, bc.PeerKind)
+}
+
+func (d *MCPConfigData) writeMCPConfigInternal(sessionKey, agentID, userID, channel, chatID, peerKind string) string {
 	if d == nil || (len(d.Servers) == 0 && d.GatewayAddr == "") {
 		return ""
 	}
@@ -124,6 +137,15 @@ func (d *MCPConfigData) WriteMCPConfig(sessionKey, agentID, userID string) strin
 		}
 		if userID != "" && !strings.ContainsAny(userID, "\r\n\x00") {
 			headers["X-User-ID"] = userID
+		}
+		if channel != "" {
+			headers["X-Channel"] = channel
+		}
+		if chatID != "" {
+			headers["X-Chat-ID"] = chatID
+		}
+		if peerKind != "" {
+			headers["X-Peer-Kind"] = peerKind
 		}
 		// HMAC signature over agent context to prevent header forgery
 		if d.GatewayToken != "" && (agentID != "" || userID != "") {

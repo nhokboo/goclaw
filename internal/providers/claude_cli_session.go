@@ -73,9 +73,9 @@ func (p *ClaudeCLIProvider) buildArgs(model, workDir, mcpConfigPath string, cliS
 // resolveMCPConfigPath returns the MCP config file path for this call.
 // If mcpConfigData is set (managed mode), writes a per-session config with agent context.
 // Otherwise falls back to the legacy global mcpConfigPath.
-func (p *ClaudeCLIProvider) resolveMCPConfigPath(sessionKey, agentID, userID string) string {
+func (p *ClaudeCLIProvider) resolveMCPConfigPath(sessionKey string, bc BridgeContext) string {
 	if p.mcpConfigData != nil {
-		path := p.mcpConfigData.WriteMCPConfig(sessionKey, agentID, userID)
+		path := p.mcpConfigData.WriteMCPConfig(sessionKey, bc)
 		if path != "" {
 			p.mcpConfigDirs.Store(filepath.Dir(path), struct{}{})
 		}
@@ -168,6 +168,45 @@ func extractDisableTools(opts map[string]interface{}) bool {
 		}
 	}
 	return false
+}
+
+// extractChannel gets channel from Options map.
+func extractChannel(opts map[string]interface{}) string {
+	if opts == nil {
+		return ""
+	}
+	if v, ok := opts[OptChannel]; ok {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return ""
+}
+
+// extractChatID gets chat_id from Options map.
+func extractChatID(opts map[string]interface{}) string {
+	if opts == nil {
+		return ""
+	}
+	if v, ok := opts[OptChatID]; ok {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return ""
+}
+
+// extractPeerKind gets peer_kind from Options map.
+func extractPeerKind(opts map[string]interface{}) string {
+	if opts == nil {
+		return ""
+	}
+	if v, ok := opts[OptPeerKind]; ok {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return ""
 }
 
 // extractSessionKey gets session_key from Options map.

@@ -431,6 +431,9 @@ func (l *Loop) runLoop(ctx context.Context, req RunRequest) (*RunResult, error) 
 				providers.OptSessionKey:  req.SessionKey,
 				providers.OptAgentID:     l.agentUUID.String(),
 				providers.OptUserID:      req.UserID,
+				providers.OptChannel:     req.Channel,
+				providers.OptChatID:      req.ChatID,
+				providers.OptPeerKind:    req.PeerKind,
 			},
 		}
 		if l.thinkingLevel != "" && l.thinkingLevel != "off" {

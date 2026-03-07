@@ -19,6 +19,15 @@ const OptAgentID = "agent_id"
 // OptUserID passes the user ID string for per-session MCP config.
 const OptUserID = "user_id"
 
+// OptChannel passes the source channel (telegram, discord, etc.) for MCP bridge context.
+const OptChannel = "channel"
+
+// OptChatID passes the source chat ID for MCP bridge context.
+const OptChatID = "chat_id"
+
+// OptPeerKind passes the peer kind (direct/group) for MCP bridge context.
+const OptPeerKind = "peer_kind"
+
 // ClaudeCLIProvider implements Provider by shelling out to the `claude` CLI binary.
 // It acts as a thin proxy: CLI manages session history, tool execution, and context.
 // GoClaw only forwards the latest user message and streams back the response.
