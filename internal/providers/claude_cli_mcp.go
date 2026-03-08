@@ -15,12 +15,28 @@ import (
 	"github.com/nextlevelbuilder/goclaw/internal/config"
 )
 
+// MCPServerEntry represents a single MCP server config for CLI injection.
+type MCPServerEntry struct {
+	Name      string
+	Transport string // "stdio", "sse", "streamable-http"
+	Command   string
+	Args      []string
+	URL       string
+	Headers   map[string]string
+	Env       map[string]string
+}
+
+// MCPServerLookup returns accessible MCP servers for a given agent ID.
+// Used to inject per-agent DB-backed MCP servers into CLI MCP config.
+type MCPServerLookup func(agentID string) []MCPServerEntry
+
 // MCPConfigData holds the base MCP server entries built at startup.
 // Per-session configs are written via WriteMCPConfig with agent context injected.
 type MCPConfigData struct {
 	Servers      map[string]interface{} // external MCP server entries (stdio/sse/http)
 	GatewayAddr  string
 	GatewayToken string
+	AgentMCPLookup MCPServerLookup // optional: resolves per-agent MCP servers from DB
 }
 
 // BuildCLIMCPConfigData builds the base MCP server map from config.
@@ -33,43 +49,15 @@ func BuildCLIMCPConfigData(servers map[string]*config.MCPServerConfig, gatewayAd
 		if !srv.IsEnabled() {
 			continue
 		}
-
-		entry := make(map[string]interface{})
-
-		switch srv.Transport {
-		case "stdio":
-			if srv.Command != "" {
-				entry["command"] = srv.Command
-			}
-			if len(srv.Args) > 0 {
-				entry["args"] = srv.Args
-			}
-			if len(srv.Env) > 0 {
-				entry["env"] = srv.Env
-			}
-
-		case "sse":
-			if srv.URL != "" {
-				entry["url"] = srv.URL
-				entry["type"] = "sse"
-			}
-			if len(srv.Headers) > 0 {
-				entry["headers"] = srv.Headers
-			}
-
-		case "streamable-http":
-			if srv.URL != "" {
-				entry["url"] = srv.URL
-				entry["type"] = "http"
-			}
-			if len(srv.Headers) > 0 {
-				entry["headers"] = srv.Headers
-			}
-
-		default:
-			continue
-		}
-
+		entry := mcpServerEntryToConfig(MCPServerEntry{
+			Name:      name,
+			Transport: srv.Transport,
+			Command:   srv.Command,
+			Args:      srv.Args,
+			URL:       srv.URL,
+			Headers:   srv.Headers,
+			Env:       srv.Env,
+		})
 		if len(entry) > 0 {
 			mcpServers[name] = entry
 		}
@@ -115,7 +103,7 @@ func (d *MCPConfigData) WriteMCPConfig(sessionKey string, bc BridgeContext) stri
 }
 
 func (d *MCPConfigData) writeMCPConfigInternal(sessionKey, agentID, userID, channel, chatID, peerKind string) string {
-	if d == nil || (len(d.Servers) == 0 && d.GatewayAddr == "") {
+	if d == nil || (len(d.Servers) == 0 && d.GatewayAddr == "" && d.AgentMCPLookup == nil) {
 		return ""
 	}
 
@@ -124,6 +112,19 @@ func (d *MCPConfigData) writeMCPConfigInternal(sessionKey, agentID, userID, chan
 	servers := make(map[string]interface{}, len(d.Servers)+1)
 	for k, v := range d.Servers {
 		servers[k] = v
+	}
+
+	// Inject per-agent MCP servers from DB (if lookup is configured and agentID is set)
+	if d.AgentMCPLookup != nil && agentID != "" {
+		for _, srv := range d.AgentMCPLookup(agentID) {
+			if _, exists := servers[srv.Name]; exists {
+				continue // don't override static/bridge entries
+			}
+			entry := mcpServerEntryToConfig(srv)
+			if len(entry) > 0 {
+				servers[srv.Name] = entry
+			}
+		}
 	}
 
 	// Build bridge entry with per-session agent context headers
@@ -246,6 +247,40 @@ func BuildCLIMCPConfig(servers map[string]*config.MCPServerConfig, gatewayAddr s
 	}
 
 	return tmpFile, cleanup, nil
+}
+
+// mcpServerEntryToConfig converts an MCPServerEntry to the CLI MCP config format.
+func mcpServerEntryToConfig(srv MCPServerEntry) map[string]interface{} {
+	entry := make(map[string]interface{})
+	switch srv.Transport {
+	case "stdio":
+		if srv.Command != "" {
+			entry["command"] = srv.Command
+		}
+		if len(srv.Args) > 0 {
+			entry["args"] = srv.Args
+		}
+		if len(srv.Env) > 0 {
+			entry["env"] = srv.Env
+		}
+	case "sse":
+		if srv.URL != "" {
+			entry["url"] = srv.URL
+			entry["type"] = "sse"
+		}
+		if len(srv.Headers) > 0 {
+			entry["headers"] = srv.Headers
+		}
+	case "streamable-http":
+		if srv.URL != "" {
+			entry["url"] = srv.URL
+			entry["type"] = "http"
+		}
+		if len(srv.Headers) > 0 {
+			entry["headers"] = srv.Headers
+		}
+	}
+	return entry
 }
 
 // sanitizePathSegment makes a string safe for use as a single filesystem directory name.

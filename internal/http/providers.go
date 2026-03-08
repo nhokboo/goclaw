@@ -15,17 +15,23 @@ import (
 
 // ProvidersHandler handles LLM provider CRUD endpoints.
 type ProvidersHandler struct {
-	store       store.ProviderStore
-	secretStore store.ConfigSecretsStore
-	token       string
-	providerReg *providers.Registry
-	gatewayAddr string     // for injecting MCP bridge into Claude CLI providers
-	cliMu       sync.Mutex // serializes Claude CLI provider create to prevent duplicates
+	store          store.ProviderStore
+	secretStore    store.ConfigSecretsStore
+	token          string
+	providerReg    *providers.Registry
+	gatewayAddr    string                   // for injecting MCP bridge into Claude CLI providers
+	mcpLookup      providers.MCPServerLookup // optional: resolves per-agent MCP servers
+	cliMu          sync.Mutex               // serializes Claude CLI provider create to prevent duplicates
 }
 
 // NewProvidersHandler creates a handler for provider management endpoints.
 func NewProvidersHandler(s store.ProviderStore, secretStore store.ConfigSecretsStore, token string, providerReg *providers.Registry, gatewayAddr string) *ProvidersHandler {
 	return &ProvidersHandler{store: s, secretStore: secretStore, token: token, providerReg: providerReg, gatewayAddr: gatewayAddr}
+}
+
+// SetMCPServerLookup sets the per-agent MCP server lookup for Claude CLI providers.
+func (h *ProvidersHandler) SetMCPServerLookup(lookup providers.MCPServerLookup) {
+	h.mcpLookup = lookup
 }
 
 // RegisterRoutes registers all provider management routes on the given mux.
@@ -82,6 +88,7 @@ func (h *ProvidersHandler) registerInMemory(p *store.LLMProviderData) {
 		cliOpts = append(cliOpts, providers.WithClaudeCLISecurityHooks("", true))
 		if h.gatewayAddr != "" {
 			mcpData := providers.BuildCLIMCPConfigData(nil, h.gatewayAddr, h.token)
+			mcpData.AgentMCPLookup = h.mcpLookup
 			cliOpts = append(cliOpts, providers.WithClaudeCLIMCPConfigData(mcpData))
 		}
 		h.providerReg.Register(providers.NewClaudeCLIProvider(cliPath, cliOpts...))
