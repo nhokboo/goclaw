@@ -115,10 +115,14 @@ func makeToolHandler(reg *tools.Registry, toolName string, msgBus *bus.MessageBu
 			chatID := tools.ToolChatIDFromCtx(ctx)
 			if channel != "" && chatID != "" {
 				var attachments []bus.MediaAttachment
-				for _, p := range result.Media {
+				for _, mf := range result.Media {
+					ct := mf.MimeType
+					if ct == "" {
+						ct = mimeFromExt(filepath.Ext(mf.Path))
+					}
 					attachments = append(attachments, bus.MediaAttachment{
-						URL:         p,
-						ContentType: mimeFromExt(filepath.Ext(p)),
+						URL:         mf.Path,
+						ContentType: ct,
 					})
 				}
 				peerKind := tools.ToolPeerKindFromCtx(ctx)
