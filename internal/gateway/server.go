@@ -48,6 +48,9 @@ type Server struct {
 	builtinToolsHandler     *httpapi.BuiltinToolsHandler     // builtin tool management API
 	oauthHandler            *httpapi.OAuthHandler            // OAuth endpoints
 	filesHandler            *httpapi.FilesHandler            // workspace file serving
+	storageHandler          *httpapi.StorageHandler          // storage file management
+	mediaUploadHandler      *httpapi.MediaUploadHandler      // media upload endpoint
+	mediaServeHandler       *httpapi.MediaServeHandler       // media serve endpoint
 	agentStore         store.AgentStore             // for context injection in tools_invoke
 	msgBus             *bus.MessageBus              // for MCP bridge media delivery
 
@@ -202,6 +205,21 @@ func (s *Server) BuildMux() *http.ServeMux {
 	// Workspace file serving (available in all modes)
 	if s.filesHandler != nil {
 		s.filesHandler.RegisterRoutes(mux)
+	}
+
+	// Storage file management (browse/delete workspace files)
+	if s.storageHandler != nil {
+		s.storageHandler.RegisterRoutes(mux)
+	}
+
+	// Media upload endpoint (available in all modes)
+	if s.mediaUploadHandler != nil {
+		s.mediaUploadHandler.RegisterRoutes(mux)
+	}
+
+	// Media serve endpoint (available in all modes)
+	if s.mediaServeHandler != nil {
+		s.mediaServeHandler.RegisterRoutes(mux)
 	}
 
 	// OAuth endpoints (available in all modes)
@@ -398,6 +416,15 @@ func (s *Server) SetOAuthHandler(h *httpapi.OAuthHandler) { s.oauthHandler = h }
 
 // SetFilesHandler sets the workspace file serving handler.
 func (s *Server) SetFilesHandler(h *httpapi.FilesHandler) { s.filesHandler = h }
+
+// SetStorageHandler sets the storage file management handler.
+func (s *Server) SetStorageHandler(h *httpapi.StorageHandler) { s.storageHandler = h }
+
+// SetMediaUploadHandler sets the media upload handler.
+func (s *Server) SetMediaUploadHandler(h *httpapi.MediaUploadHandler) { s.mediaUploadHandler = h }
+
+// SetMediaServeHandler sets the media serve handler.
+func (s *Server) SetMediaServeHandler(h *httpapi.MediaServeHandler) { s.mediaServeHandler = h }
 
 // SetAgentStore sets the agent store for context injection in tools_invoke.
 func (s *Server) SetAgentStore(as store.AgentStore) { s.agentStore = as }

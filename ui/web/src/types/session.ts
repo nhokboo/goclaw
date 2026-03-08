@@ -11,6 +11,9 @@ export interface SessionInfo {
   channel?: string;
   inputTokens?: number;
   outputTokens?: number;
+  userID?: string;
+  metadata?: Record<string, string>;
+  agentName?: string;
 }
 
 export interface SessionPreview {

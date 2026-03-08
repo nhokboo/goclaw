@@ -4,6 +4,21 @@ export interface SkillInfo {
   slug?: string;
   description: string;
   source: string;
+  visibility?: string;
+  tags?: string[];
+  version?: number;
+}
+
+export interface SkillFile {
+  path: string;
+  name: string;
+  isDir: boolean;
+  size: number;
+}
+
+export interface SkillVersions {
+  versions: number[];
+  current: number;
 }
 
 export interface SkillWithGrant {

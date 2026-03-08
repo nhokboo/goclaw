@@ -93,6 +93,21 @@ func (dm *DelegateManager) ListActive(sourceAgentID uuid.UUID) []*DelegationTask
 	return tasks
 }
 
+// ListActiveForOrigin returns active delegations scoped to the same origin conversation.
+// Only delegations matching the same source agent + channel + chatID are returned.
+// This prevents cross-session sibling counting when multiple chats delegate concurrently.
+func (dm *DelegateManager) ListActiveForOrigin(originKey string) []*DelegationTask {
+	var tasks []*DelegationTask
+	dm.active.Range(func(_, val any) bool {
+		t := val.(*DelegationTask)
+		if t.originKey() == originKey && t.Status == "running" {
+			tasks = append(tasks, t)
+		}
+		return true
+	})
+	return tasks
+}
+
 // ActiveCountForLink counts running delegations for a specific source→target pair.
 func (dm *DelegateManager) ActiveCountForLink(sourceID, targetID uuid.UUID) int {
 	count := 0
@@ -119,11 +134,11 @@ func (dm *DelegateManager) ActiveCountForTarget(targetID uuid.UUID) int {
 	return count
 }
 
-// accumulateArtifacts merges new artifacts into the pending set for a source agent.
+// accumulateArtifacts merges new artifacts into the pending set for an origin conversation.
 // Called for intermediate delegation completions (when siblings are still running).
-func (dm *DelegateManager) accumulateArtifacts(sourceAgentID uuid.UUID, arts *DelegateArtifacts) {
-	key := sourceAgentID.String()
-	existing, _ := dm.pendingArtifacts.Load(key)
+// The originKey scopes accumulation to the same source agent + channel + chatID.
+func (dm *DelegateManager) accumulateArtifacts(originKey string, arts *DelegateArtifacts) {
+	existing, _ := dm.pendingArtifacts.Load(originKey)
 	var merged DelegateArtifacts
 	if existing != nil {
 		merged = *existing.(*DelegateArtifacts)
@@ -131,14 +146,13 @@ func (dm *DelegateManager) accumulateArtifacts(sourceAgentID uuid.UUID, arts *De
 	merged.Media = append(merged.Media, arts.Media...)
 	merged.Results = append(merged.Results, arts.Results...)
 	merged.CompletedTaskIDs = append(merged.CompletedTaskIDs, arts.CompletedTaskIDs...)
-	dm.pendingArtifacts.Store(key, &merged)
+	dm.pendingArtifacts.Store(originKey, &merged)
 }
 
-// collectArtifacts retrieves and removes all accumulated artifacts for a source agent.
+// collectArtifacts retrieves and removes all accumulated artifacts for an origin conversation.
 // Called when the last delegation completes (siblingCount == 0).
-func (dm *DelegateManager) collectArtifacts(sourceAgentID uuid.UUID) *DelegateArtifacts {
-	key := sourceAgentID.String()
-	if pending, ok := dm.pendingArtifacts.LoadAndDelete(key); ok {
+func (dm *DelegateManager) collectArtifacts(originKey string) *DelegateArtifacts {
+	if pending, ok := dm.pendingArtifacts.LoadAndDelete(originKey); ok {
 		return pending.(*DelegateArtifacts)
 	}
 	return &DelegateArtifacts{}
@@ -215,6 +229,45 @@ func (dm *DelegateManager) autoCompleteTeamTask(task *DelegationTask, resultCont
 				FromAgentID: task.TargetAgentID,
 				ToAgentID:   &task.SourceAgentID,
 				Content:     fmt.Sprintf("[Delegation completed] %s", summary),
+				MessageType: store.TeamMessageTypeChat,
+				TaskID:      &taskID,
+			})
+		}
+	}
+}
+
+// autoFailTeamTask marks the associated team task as failed.
+// Called after a delegation fails. Errors are logged but not fatal.
+func (dm *DelegateManager) autoFailTeamTask(task *DelegationTask, errMsg string) {
+	if dm.teamStore == nil || task.TeamTaskID == uuid.Nil {
+		return
+	}
+
+	// Truncate error message for storage
+	if len(errMsg) > 2000 {
+		errMsg = errMsg[:2000] + "..."
+	}
+
+	_ = dm.teamStore.ClaimTask(context.Background(), task.TeamTaskID, task.TargetAgentID, task.TeamID)
+	if err := dm.teamStore.FailTask(context.Background(), task.TeamTaskID, task.TeamID, errMsg); err != nil {
+		slog.Warn("delegate: failed to auto-fail team task",
+			"task_id", task.TeamTaskID, "delegation_id", task.ID, "error", err)
+	} else {
+		slog.Info("delegate: auto-failed team task",
+			"task_id", task.TeamTaskID, "delegation_id", task.ID)
+
+		// Persist delegation failure as team message for audit trail
+		if task.TeamID != uuid.Nil {
+			summary := errMsg
+			if len(summary) > 500 {
+				summary = summary[:500] + "..."
+			}
+			taskID := task.TeamTaskID
+			_ = dm.teamStore.SendMessage(context.Background(), &store.TeamMessageData{
+				TeamID:      task.TeamID,
+				FromAgentID: task.TargetAgentID,
+				ToAgentID:   &task.SourceAgentID,
+				Content:     fmt.Sprintf("[Delegation failed] %s", summary),
 				MessageType: store.TeamMessageTypeChat,
 				TaskID:      &taskID,
 			})

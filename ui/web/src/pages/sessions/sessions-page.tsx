@@ -21,7 +21,7 @@ export function SessionsPage() {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
 
-  const { sessions, total, loading, preview, deleteSession, resetSession } = useSessions({
+  const { sessions, total, loading, preview, deleteSession, resetSession, patchSession } = useSessions({
     limit: pageSize,
     offset: (page - 1) * pageSize,
   });
@@ -44,13 +44,21 @@ export function SessionsPage() {
           navigate("/sessions");
         }}
         onReset={resetSession}
+        onPatch={patchSession}
       />
     );
   }
 
   const filtered = sessions.filter((s) => {
     const q = search.toLowerCase();
-    return s.key.toLowerCase().includes(q) || (s.label ?? "").toLowerCase().includes(q);
+    const meta = s.metadata;
+    return (
+      s.key.toLowerCase().includes(q) ||
+      (s.label ?? "").toLowerCase().includes(q) ||
+      (meta?.display_name ?? "").toLowerCase().includes(q) ||
+      (meta?.username ?? "").toLowerCase().includes(q) ||
+      (meta?.chat_title ?? "").toLowerCase().includes(q)
+    );
   });
 
   return (
@@ -131,11 +139,15 @@ function SessionRow({
       onClick={onClick}
     >
       <td className="px-4 py-3">
-        <div className="text-sm font-medium">{session.label || parsed.scope}</div>
-        <div className="text-xs text-muted-foreground">{session.key}</div>
+        <div className="text-sm font-medium">
+          {session.metadata?.chat_title || session.metadata?.display_name || session.label || parsed.scope}
+        </div>
+        <div className="text-xs text-muted-foreground">
+          {session.metadata?.username ? `@${session.metadata.username}` : session.key}
+        </div>
       </td>
       <td className="px-4 py-3">
-        <Badge variant="outline">{parsed.agentId}</Badge>
+        <Badge variant="outline">{session.agentName || parsed.agentId}</Badge>
       </td>
       <td className="px-4 py-3 text-sm text-muted-foreground">
         {session.channel || "ws"}

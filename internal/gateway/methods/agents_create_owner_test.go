@@ -95,6 +95,12 @@ func (s *createCaptureStore) ListGroupFileWriters(_ context.Context, _ uuid.UUID
 func (s *createCaptureStore) ListGroupFileWriterGroups(_ context.Context, _ uuid.UUID) ([]store.GroupWriterGroupInfo, error) {
 	return nil, nil
 }
+func (s *createCaptureStore) ListUserInstances(_ context.Context, _ uuid.UUID) ([]store.UserInstanceData, error) {
+	return nil, nil
+}
+func (s *createCaptureStore) UpdateUserProfileMetadata(_ context.Context, _ uuid.UUID, _ string, _ map[string]string) error {
+	return nil
+}
 
 // ---- helpers ----
 

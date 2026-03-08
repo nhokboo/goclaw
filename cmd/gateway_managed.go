@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"log/slog"
+	"path/filepath"
 
 	"github.com/google/uuid"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/nextlevelbuilder/goclaw/internal/hooks"
 	httpapi "github.com/nextlevelbuilder/goclaw/internal/http"
 	mcpbridge "github.com/nextlevelbuilder/goclaw/internal/mcp"
+	"github.com/nextlevelbuilder/goclaw/internal/media"
 	"github.com/nextlevelbuilder/goclaw/internal/providers"
 	"github.com/nextlevelbuilder/goclaw/internal/sandbox"
 	"github.com/nextlevelbuilder/goclaw/internal/skills"
@@ -45,7 +47,7 @@ func wireExtras(
 	sandboxMgr sandbox.Manager,
 	dynamicLoader *tools.DynamicToolLoader,
 	redisClient any, // nil when built without -tags redis or when Redis is unconfigured
-) (*tools.ContextFileInterceptor, *tools.DelegateManager, *mcpbridge.Pool) {
+) (*tools.ContextFileInterceptor, *tools.DelegateManager, *mcpbridge.Pool, *media.Store) {
 	// 1. Build cache instances (in-memory or Redis depending on build tags)
 	agentCtxCache, userCtxCache, gwCache := makeCaches(redisClient)
 
@@ -60,6 +62,27 @@ func wireExtras(
 	var groupWriterCache *store.GroupWriterCache
 	if stores.Agents != nil {
 		groupWriterCache = store.NewGroupWriterCache(stores.Agents, gwCache)
+	}
+
+	// 1c. Persistent media storage for cross-turn image/document access
+	mediaStore, err := media.NewStore(filepath.Join(workspace, ".media"))
+	if err != nil {
+		slog.Warn("media store creation failed, images will not persist across turns", "error", err)
+	}
+
+	// Wire media cleanup on session delete.
+	if mediaStore != nil {
+		if pgSess, ok := sessStore.(*pg.PGSessionStore); ok {
+			pgSess.OnDelete = func(sessionKey string) {
+				_ = mediaStore.DeleteSession(sessionKey)
+			}
+		}
+		// Register media analysis tools (need mediaStore for file access).
+		toolsReg.Register(tools.NewReadDocumentTool(providerReg, mediaStore))
+		toolsReg.Register(tools.NewReadAudioTool(providerReg, mediaStore))
+		toolsReg.Register(tools.NewReadVideoTool(providerReg, mediaStore))
+		toolsReg.Register(tools.NewCreateVideoTool(providerReg))
+		slog.Info("media tools registered", "tools", "read_document,read_audio,read_video,create_video")
 	}
 
 	// 2. User seeding callback: seeds per-user context files on first chat
@@ -127,6 +150,7 @@ func wireExtras(
 		MCPStore:               stores.MCP,
 		MCPPool:                mcpPool,
 		GroupWriterCache:       groupWriterCache,
+		MediaStore:             mediaStore,
 		OnEvent: func(event agent.AgentEvent) {
 			msgBus.Broadcast(bus.Event{
 				Name:    protocol.EventAgent,
@@ -340,6 +364,7 @@ func wireExtras(
 			result, err := loop.Run(ctx, agent.RunRequest{
 				SessionKey:        req.SessionKey,
 				Message:           req.Message,
+				Media:             req.Media,
 				UserID:            req.UserID,
 				Channel:           req.Channel,
 				ChatID:            req.ChatID,
@@ -357,13 +382,15 @@ func wireExtras(
 			if err != nil {
 				return nil, err
 			}
+			var drMedia []bus.MediaFile
+			for _, m := range result.Media {
+				drMedia = append(drMedia, bus.MediaFile{Path: m.Path, MimeType: m.ContentType})
+			}
 			dr := &tools.DelegateRunResult{
 				Content:      result.Content,
 				Iterations:   result.Iterations,
 				Deliverables: result.Deliverables,
-			}
-			for _, m := range result.Media {
-				dr.MediaPaths = append(dr.MediaPaths, m.Path)
+				Media:        drMedia,
 			}
 			return dr, nil
 		}
@@ -372,6 +399,9 @@ func wireExtras(
 			delegateMgr.SetTeamStore(stores.Teams)
 		}
 		delegateMgr.SetSessionStore(stores.Sessions)
+		if mediaStore != nil {
+			delegateMgr.SetMediaLoader(mediaStore)
+		}
 
 		// Hook engine (quality gates)
 		hookEngine := hooks.NewEngine()
@@ -482,7 +512,7 @@ func wireExtras(
 	}
 
 	slog.Info("resolver + interceptors + cache subscribers wired")
-	return contextFileInterceptor, delegateMgr, mcpPool
+	return contextFileInterceptor, delegateMgr, mcpPool, mediaStore
 }
 
 // wireHTTP creates HTTP handlers (agents + skills + traces + MCP + custom tools + channel instances + providers + delegations + builtin tools).

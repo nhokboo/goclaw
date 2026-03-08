@@ -27,8 +27,9 @@ type SessionData struct {
 	MemoryFlushCompactionCount int    `json:"memoryFlushCompactionCount,omitempty"`
 	MemoryFlushAt              int64  `json:"memoryFlushAt,omitempty"`
 	Label                      string `json:"label,omitempty"`
-	SpawnedBy                  string `json:"spawnedBy,omitempty"`
-	SpawnDepth                 int    `json:"spawnDepth,omitempty"`
+	SpawnedBy                  string            `json:"spawnedBy,omitempty"`
+	SpawnDepth                 int               `json:"spawnDepth,omitempty"`
+	Metadata                   map[string]string `json:"metadata,omitempty"`
 
 	// Adaptive throttle: cached per-session so scheduler reads without DB lookup.
 	ContextWindow    int `json:"contextWindow,omitempty"`    // agent's context window (set on first run)
@@ -38,12 +39,14 @@ type SessionData struct {
 
 // SessionInfo is lightweight session metadata for listing.
 type SessionInfo struct {
-	Key          string    `json:"key"`
-	MessageCount int       `json:"messageCount"`
-	Created      time.Time `json:"created"`
-	Updated      time.Time `json:"updated"`
-	Label        string    `json:"label,omitempty"`
-	Channel      string    `json:"channel,omitempty"`
+	Key          string            `json:"key"`
+	MessageCount int               `json:"messageCount"`
+	Created      time.Time         `json:"created"`
+	Updated      time.Time         `json:"updated"`
+	Label        string            `json:"label,omitempty"`
+	Channel      string            `json:"channel,omitempty"`
+	UserID       string            `json:"userID,omitempty"`
+	Metadata     map[string]string `json:"metadata,omitempty"`
 }
 
 // SessionListOpts holds pagination options for ListPaged.
@@ -57,6 +60,22 @@ type SessionListOpts struct {
 type SessionListResult struct {
 	Sessions []SessionInfo `json:"sessions"`
 	Total    int           `json:"total"`
+}
+
+// SessionInfoRich is an enriched session info for API responses (includes model, tokens, agent name).
+type SessionInfoRich struct {
+	SessionInfo
+	Model        string `json:"model,omitempty"`
+	Provider     string `json:"provider,omitempty"`
+	InputTokens  int64  `json:"inputTokens,omitempty"`
+	OutputTokens int64  `json:"outputTokens,omitempty"`
+	AgentName    string `json:"agentName,omitempty"`
+}
+
+// SessionListRichResult is the paginated result of ListPagedRich.
+type SessionListRichResult struct {
+	Sessions []SessionInfoRich `json:"sessions"`
+	Total    int               `json:"total"`
 }
 
 // SessionStore manages conversation sessions.
@@ -74,6 +93,7 @@ type SessionStore interface {
 	GetCompactionCount(key string) int
 	GetMemoryFlushCompactionCount(key string) int
 	SetMemoryFlushDone(key string)
+	SetSessionMetadata(key string, metadata map[string]string)
 	SetSpawnInfo(key, spawnedBy string, depth int)
 	SetContextWindow(key string, cw int)
 	GetContextWindow(key string) int
@@ -84,6 +104,7 @@ type SessionStore interface {
 	Delete(key string) error
 	List(agentID string) []SessionInfo
 	ListPaged(opts SessionListOpts) SessionListResult
+	ListPagedRich(opts SessionListOpts) SessionListRichResult
 	Save(key string) error
 	LastUsedChannel(agentID string) (channel, chatID string)
 }

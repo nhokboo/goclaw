@@ -1,0 +1,141 @@
+package tools
+
+import (
+	"context"
+	"encoding/base64"
+	"fmt"
+	"log/slog"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/nextlevelbuilder/goclaw/internal/providers"
+)
+
+// resolveAudioFile finds the audio file path from context MediaRefs.
+func (t *ReadAudioTool) resolveAudioFile(ctx context.Context, mediaID string) (path, mime string, err error) {
+	if t.mediaLoader == nil {
+		return "", "", fmt.Errorf("no media storage configured — cannot access audio files")
+	}
+
+	refs := MediaAudioRefsFromCtx(ctx)
+	if len(refs) == 0 {
+		return "", "", fmt.Errorf("no audio files available in this conversation. The user may not have sent an audio file.")
+	}
+
+	var ref *providers.MediaRef
+	if mediaID != "" {
+		for i := range refs {
+			if refs[i].ID == mediaID {
+				ref = &refs[i]
+				break
+			}
+		}
+		if ref == nil {
+			return "", "", fmt.Errorf("audio with media_id %q not found in conversation", mediaID)
+		}
+	} else {
+		ref = &refs[len(refs)-1]
+	}
+
+	p, err := t.mediaLoader.LoadPath(ref.ID)
+	if err != nil {
+		return "", "", fmt.Errorf("audio file not found: %v", err)
+	}
+
+	mime = ref.MimeType
+	if mime == "" || mime == "application/octet-stream" {
+		mime = mimeFromAudioExt(filepath.Ext(p))
+	}
+
+	return p, mime, nil
+}
+
+// callProvider dispatches audio analysis to the appropriate provider API.
+// Gemini: uses File API (upload → poll → file_data in generateContent).
+// OpenAI: uses input_audio content part in chat completions.
+// Others: falls back to base64 in image_url (best effort).
+func (t *ReadAudioTool) callProvider(ctx context.Context, cp credentialProvider, providerName, model string, params map[string]any) ([]byte, *providers.Usage, error) {
+	prompt := GetParamString(params, "prompt", "Analyze this audio and describe its contents.")
+	data, _ := params["data"].([]byte)
+	mime := GetParamString(params, "mime", "audio/mpeg")
+
+	// Gemini: use File API (inlineData doesn't work for audio).
+	if strings.HasPrefix(providerName, "gemini") {
+		slog.Info("read_audio: using gemini file API", "provider", providerName, "model", model, "size", len(data), "mime", mime)
+		resp, err := geminiFileAPICall(ctx, cp.APIKey(), model, prompt, data, mime, 120*time.Second)
+		if err != nil {
+			return nil, nil, fmt.Errorf("gemini file API: %w", err)
+		}
+		return []byte(resp.Content), resp.Usage, nil
+	}
+
+	// OpenAI: use input_audio content part (supports wav, mp3).
+	if strings.HasPrefix(providerName, "openai") {
+		slog.Info("read_audio: using openai input_audio API", "provider", providerName, "model", model, "size", len(data), "mime", mime)
+		resp, err := openaiAudioCall(ctx, cp.APIKey(), cp.APIBase(), model, prompt, data, mime)
+		if err != nil {
+			return nil, nil, fmt.Errorf("openai audio call: %w", err)
+		}
+		return []byte(resp.Content), resp.Usage, nil
+	}
+
+	// Other providers: try standard Chat API with base64 audio as image_url (best effort).
+	p, err := t.registry.Get(providerName)
+	if err != nil {
+		return nil, nil, fmt.Errorf("provider %q not available: %w", providerName, err)
+	}
+
+	slog.Info("read_audio: using chat API fallback", "provider", providerName, "model", model, "size", len(data))
+	resp, err := p.Chat(ctx, providers.ChatRequest{
+		Messages: []providers.Message{
+			{
+				Role:    "user",
+				Content: prompt,
+				Images:  []providers.ImageContent{{MimeType: mime, Data: base64.StdEncoding.EncodeToString(data)}},
+			},
+		},
+		Model: model,
+		Options: map[string]interface{}{
+			"max_tokens":  16384,
+			"temperature": 0.2,
+		},
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("chat API: %w", err)
+	}
+	return []byte(resp.Content), resp.Usage, nil
+}
+
+// openaiAudioCall sends audio to OpenAI using the input_audio content part.
+func openaiAudioCall(ctx context.Context, apiKey, baseURL, model, prompt string, data []byte, mime string) (*providers.ChatResponse, error) {
+	// Determine format from MIME (OpenAI supports: wav, mp3).
+	format := "mp3"
+	switch {
+	case strings.Contains(mime, "wav"):
+		format = "wav"
+	case strings.Contains(mime, "mp3"), strings.Contains(mime, "mpeg"):
+		format = "mp3"
+	}
+
+	b64 := base64.StdEncoding.EncodeToString(data)
+
+	body := map[string]interface{}{
+		"model": model,
+		"messages": []map[string]interface{}{
+			{
+				"role": "user",
+				"content": []map[string]interface{}{
+					{"type": "text", "text": prompt},
+					{"type": "input_audio", "input_audio": map[string]string{
+						"data":   b64,
+						"format": format,
+					}},
+				},
+			},
+		},
+		"max_tokens": 16384,
+	}
+
+	return callOpenAICompatJSON(ctx, apiKey, baseURL, body, 120*time.Second)
+}

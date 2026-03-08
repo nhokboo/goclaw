@@ -193,7 +193,22 @@ func (c *Channel) handleMessage(ctx context.Context, update telego.Update) {
 
 	// Process media (photos, audio, voice, documents)
 	mediaList := c.resolveMedia(ctx, message)
-	var mediaPaths []string
+
+	// When user replies to a message with media, also resolve media from the replied message.
+	// This re-downloads the file from Telegram so the agent can analyze it even if the
+	// original turn was compacted out of session history.
+	if message.ReplyToMessage != nil && len(mediaList) == 0 {
+		replyMedia := c.resolveMedia(ctx, message.ReplyToMessage)
+		if len(replyMedia) > 0 {
+			mediaList = append(mediaList, replyMedia...)
+			slog.Debug("telegram: resolved media from replied message",
+				"reply_msg_id", message.ReplyToMessage.MessageID,
+				"media_count", len(replyMedia),
+			)
+		}
+	}
+
+	var mediaFiles []bus.MediaFile
 
 	if len(mediaList) > 0 {
 		// First pass: process each media item.
@@ -227,16 +242,14 @@ func (c *Channel) handleMessage(ctx context.Context, update telego.Update) {
 				}
 
 			case "video", "animation":
-				// Video: notify user that video is not fully supported yet.
-				// Only add the notice when there is no caption/text — media tags haven't been
-				// prepended yet at this stage of the pipeline.
-				if content == "" {
-					extraContent += "\n\n[Video received — video content analysis is not yet supported, only caption text is processed]"
-				}
+				// Video files are handled by the read_video tool via MediaRef pipeline.
 			}
 
 			if m.FilePath != "" {
-				mediaPaths = append(mediaPaths, m.FilePath)
+				mediaFiles = append(mediaFiles, bus.MediaFile{
+					Path:     m.FilePath,
+					MimeType: m.ContentType,
+				})
 			}
 		}
 
@@ -318,7 +331,7 @@ func (c *Channel) handleMessage(ctx context.Context, update telego.Update) {
 			if c.pairingService.IsPaired(groupSenderID, c.Name()) {
 				c.approvedGroups.Store(chatIDStr, true)
 			} else {
-				c.sendGroupPairingReply(ctx, chatID, chatIDStr, groupSenderID, localKey, messageThreadID)
+				c.sendGroupPairingReply(ctx, chatID, chatIDStr, groupSenderID, localKey, messageThreadID, message.Chat.Title)
 				return
 			}
 		}
@@ -398,6 +411,9 @@ func (c *Channel) handleMessage(ctx context.Context, update telego.Update) {
 		"is_group":   fmt.Sprintf("%t", isGroup),
 		"local_key":  localKey,
 	}
+	if message.Chat.Title != "" {
+		metadata["chat_title"] = message.Chat.Title
+	}
 	if isForum {
 		metadata["is_forum"] = "true"
 		metadata["message_thread_id"] = fmt.Sprintf("%d", messageThreadID)
@@ -439,7 +455,7 @@ func (c *Channel) handleMessage(ctx context.Context, update telego.Update) {
 		SenderID:     senderID,
 		ChatID:       chatIDStr,
 		Content:      finalContent,
-		Media:        mediaPaths,
+		Media:        mediaFiles,
 		PeerKind:     peerKind,
 		UserID:       userID,
 		AgentID:      targetAgentID,

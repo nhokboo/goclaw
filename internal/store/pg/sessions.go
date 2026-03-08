@@ -18,6 +18,9 @@ type PGSessionStore struct {
 	mu sync.RWMutex
 	// In-memory cache for hot sessions (reduces DB reads during tool loops)
 	cache map[string]*store.SessionData
+	// OnDelete is called with the session key when a session is deleted.
+	// Used for media file cleanup.
+	OnDelete func(sessionKey string)
 }
 
 func NewPGSessionStore(db *sql.DB) *PGSessionStore {
@@ -126,6 +129,19 @@ func (s *PGSessionStore) SetLabel(key, label string) {
 		data.Label = label
 		data.Updated = time.Now()
 	}
+}
+
+func (s *PGSessionStore) SetSessionMetadata(key string, metadata map[string]string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	data := s.getOrInit(key)
+	if data.Metadata == nil {
+		data.Metadata = make(map[string]string)
+	}
+	for k, v := range metadata {
+		data.Metadata[k] = v
+	}
+	data.Updated = time.Now()
 }
 
 func (s *PGSessionStore) SetAgentInfo(key string, agentUUID uuid.UUID, userID string) {

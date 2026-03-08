@@ -24,6 +24,8 @@ const (
 	ProviderBailian         = "bailian"
 	ProviderChatGPTOAuth    = "chatgpt_oauth"
 	ProviderClaudeCLI       = "claude_cli"
+	ProviderSuno            = "suno"
+	ProviderYesScale        = "yescale"
 )
 
 // ValidProviderTypes lists all accepted provider_type values.
@@ -43,6 +45,8 @@ var ValidProviderTypes = map[string]bool{
 	ProviderBailian:         true,
 	ProviderChatGPTOAuth:    true,
 	ProviderClaudeCLI:       true,
+	ProviderSuno:            true,
+	ProviderYesScale:        true,
 }
 
 // LLMProviderData represents an LLM provider configuration.

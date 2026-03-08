@@ -3,16 +3,16 @@ package telegram
 import (
 	"context"
 	"fmt"
-	"html"
 	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/mymmrac/telego"
+
+	"github.com/nextlevelbuilder/goclaw/internal/channels/media"
 )
 
 const (
@@ -21,21 +21,10 @@ const (
 
 	// downloadMaxRetries is the number of download retry attempts.
 	downloadMaxRetries = 3
-
-	// docMaxChars is the max characters to extract from text documents (matching TS: 200K).
-	docMaxChars = 200_000
 )
 
-// MediaInfo contains information about a downloaded media file.
-type MediaInfo struct {
-	Type        string // "image", "video", "audio", "voice", "document", "animation"
-	FilePath    string // local file path after download (sanitized for images)
-	FileID      string // Telegram file_id
-	ContentType string // MIME type
-	FileName    string // original filename
-	FileSize    int64
-	Transcript  string // STT transcript for audio/voice media (empty if not transcribed)
-}
+// MediaInfo is an alias for the shared media.MediaInfo type.
+type MediaInfo = media.MediaInfo
 
 // resolveMedia extracts and downloads media from a Telegram message.
 // Returns a list of MediaInfo for each media item found.
@@ -54,15 +43,10 @@ func (c *Channel) resolveMedia(ctx context.Context, msg *telego.Message) []Media
 		if err != nil {
 			slog.Warn("failed to download photo", "file_id", photo.FileID, "error", err)
 		} else {
-			// Sanitize image for LLM vision
-			sanitized, sanitizeErr := sanitizeImage(filePath)
-			if sanitizeErr != nil {
-				slog.Warn("failed to sanitize image, using original", "error", sanitizeErr)
-				sanitized = filePath
-			}
+			// Pass raw file to agent loop — sanitization now happens at loop level.
 			results = append(results, MediaInfo{
 				Type:        "image",
-				FilePath:    sanitized,
+				FilePath:    filePath,
 				FileID:      photo.FileID,
 				ContentType: "image/jpeg",
 				FileSize:    int64(photo.FileSize),
@@ -72,34 +56,52 @@ func (c *Channel) resolveMedia(ctx context.Context, msg *telego.Message) []Media
 
 	// Video
 	if msg.Video != nil {
-		results = append(results, MediaInfo{
-			Type:        "video",
-			FileID:      msg.Video.FileID,
-			ContentType: msg.Video.MimeType,
-			FileName:    msg.Video.FileName,
-			FileSize:    int64(msg.Video.FileSize),
-		})
+		filePath, err := c.downloadMedia(ctx, msg.Video.FileID, maxBytes)
+		if err != nil {
+			slog.Warn("failed to download video", "file_id", msg.Video.FileID, "error", err)
+		} else {
+			results = append(results, MediaInfo{
+				Type:        "video",
+				FilePath:    filePath,
+				FileID:      msg.Video.FileID,
+				ContentType: msg.Video.MimeType,
+				FileName:    msg.Video.FileName,
+				FileSize:    int64(msg.Video.FileSize),
+			})
+		}
 	}
 
 	// Video Note (round video)
 	if msg.VideoNote != nil {
-		results = append(results, MediaInfo{
-			Type:        "video",
-			FileID:      msg.VideoNote.FileID,
-			ContentType: "video/mp4",
-			FileSize:    int64(msg.VideoNote.FileSize),
-		})
+		filePath, err := c.downloadMedia(ctx, msg.VideoNote.FileID, maxBytes)
+		if err != nil {
+			slog.Warn("failed to download video note", "file_id", msg.VideoNote.FileID, "error", err)
+		} else {
+			results = append(results, MediaInfo{
+				Type:        "video",
+				FilePath:    filePath,
+				FileID:      msg.VideoNote.FileID,
+				ContentType: "video/mp4",
+				FileSize:    int64(msg.VideoNote.FileSize),
+			})
+		}
 	}
 
 	// Animation (GIF)
 	if msg.Animation != nil {
-		results = append(results, MediaInfo{
-			Type:        "animation",
-			FileID:      msg.Animation.FileID,
-			ContentType: msg.Animation.MimeType,
-			FileName:    msg.Animation.FileName,
-			FileSize:    int64(msg.Animation.FileSize),
-		})
+		filePath, err := c.downloadMedia(ctx, msg.Animation.FileID, maxBytes)
+		if err != nil {
+			slog.Warn("failed to download animation", "file_id", msg.Animation.FileID, "error", err)
+		} else {
+			results = append(results, MediaInfo{
+				Type:        "animation",
+				FilePath:    filePath,
+				FileID:      msg.Animation.FileID,
+				ContentType: msg.Animation.MimeType,
+				FileName:    msg.Animation.FileName,
+				FileSize:    int64(msg.Animation.FileSize),
+			})
+		}
 	}
 
 	// Audio
@@ -228,98 +230,12 @@ func (c *Channel) downloadMedia(ctx context.Context, fileID string, maxBytes int
 	return tmpFile.Name(), nil
 }
 
-// buildMediaTags generates content tags for media items (matching TS media placeholder format).
-// For audio/voice items that have been transcribed, the transcript is embedded in a <transcript> block.
+// buildMediaTags delegates to the shared media package.
 func buildMediaTags(mediaList []MediaInfo) string {
-	var tags []string
-	for _, m := range mediaList {
-		switch m.Type {
-		case "image":
-			tags = append(tags, "<media:image>")
-		case "video", "animation":
-			tags = append(tags, "<media:video>")
-		case "audio":
-			if m.Transcript != "" {
-				tags = append(tags, fmt.Sprintf("<media:audio>\n<transcript>%s</transcript>", html.EscapeString(m.Transcript)))
-			} else {
-				tags = append(tags, "<media:audio>")
-			}
-		case "voice":
-			if m.Transcript != "" {
-				tags = append(tags, fmt.Sprintf("<media:voice>\n<transcript>%s</transcript>", html.EscapeString(m.Transcript)))
-			} else {
-				tags = append(tags, "<media:voice>")
-			}
-		case "document":
-			tags = append(tags, "<media:document>")
-		}
-	}
-	return strings.Join(tags, "\n")
+	return media.BuildMediaTags(mediaList)
 }
 
-// --- Document Text Extraction ---
-
-// textExtensions maps file extensions to MIME types for text files we can extract.
-var textExtensions = map[string]string{
-	".txt":  "text/plain",
-	".md":   "text/markdown",
-	".csv":  "text/csv",
-	".tsv":  "text/tab-separated-values",
-	".json": "application/json",
-	".yaml": "text/yaml",
-	".yml":  "text/yaml",
-	".xml":  "text/xml",
-	".log":  "text/plain",
-	".ini":  "text/plain",
-	".cfg":  "text/plain",
-	".env":  "text/plain",
-	".sh":   "text/x-shellscript",
-	".py":   "text/x-python",
-	".go":   "text/x-go",
-	".js":   "text/javascript",
-	".ts":   "text/typescript",
-	".html": "text/html",
-	".css":  "text/css",
-	".sql":  "text/x-sql",
-	".rs":   "text/x-rust",
-	".java": "text/x-java",
-	".c":    "text/x-c",
-	".cpp":  "text/x-c++",
-	".h":    "text/x-c",
-	".rb":   "text/x-ruby",
-	".php":  "text/x-php",
-	".toml": "text/x-toml",
-}
-
-// extractDocumentContent reads a document file and returns its content wrapped in XML tags.
-// For text files: extracts content, truncates at docMaxChars, wraps in <file> block.
-// For binary files: returns a placeholder message.
-// Ref: TS src/media-understanding/apply.ts → extractFileBlocks()
+// extractDocumentContent delegates to the shared media package.
 func extractDocumentContent(filePath, fileName string) (string, error) {
-	if filePath == "" {
-		return fmt.Sprintf("[File: %s — download failed]", fileName), nil
-	}
-
-	ext := strings.ToLower(filepath.Ext(fileName))
-	mime, isText := textExtensions[ext]
-	if !isText {
-		return fmt.Sprintf("[File: %s — binary format not supported, only text files can be processed]", fileName), nil
-	}
-
-	data, err := os.ReadFile(filePath)
-	if err != nil {
-		return "", fmt.Errorf("read file %s: %w", fileName, err)
-	}
-
-	content := string(data)
-
-	// Truncate if too long
-	if len(content) > docMaxChars {
-		content = content[:docMaxChars] + "\n... [truncated]"
-	}
-
-	// XML escape content to prevent injection
-	escaped := html.EscapeString(content)
-
-	return fmt.Sprintf("<file name=%q mime=%q>\n%s\n</file>", fileName, mime, escaped), nil
+	return media.ExtractDocumentContent(filePath, fileName)
 }

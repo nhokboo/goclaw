@@ -15,6 +15,20 @@ import (
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
 
+// filteredToolNames returns tool names after applying policy filters.
+// Used for system prompt so denied tools don't appear in ## Tooling section.
+func (l *Loop) filteredToolNames() []string {
+	if l.toolPolicy == nil {
+		return l.tools.List()
+	}
+	defs := l.toolPolicy.FilterTools(l.tools, l.id, l.provider.Name(), l.agentToolPolicy, nil, false, false)
+	names := make([]string, len(defs))
+	for i, d := range defs {
+		names[i] = d.Function.Name
+	}
+	return names
+}
+
 // buildMessages constructs the full message list for an LLM request.
 // Returns the messages and whether BOOTSTRAP.md was present in context files
 // (used by the caller for auto-cleanup without an extra DB roundtrip).
@@ -73,7 +87,7 @@ func (l *Loop) buildMessages(ctx context.Context, history []providers.Message, s
 		PeerKind:               peerKind,
 		OwnerIDs:               l.ownerIDs,
 		Mode:                   mode,
-		ToolNames:              l.tools.List(),
+		ToolNames:              l.filteredToolNames(),
 		SkillsSummary:          l.resolveSkillsSummary(skillFilter),
 		HasMemory:              l.hasMemory,
 		HasSpawn:               l.tools != nil && hasSpawn,
@@ -85,6 +99,7 @@ func (l *Loop) buildMessages(ctx context.Context, history []providers.Message, s
 		SandboxEnabled:         l.sandboxEnabled,
 		SandboxContainerDir:    l.sandboxContainerDir,
 		SandboxWorkspaceAccess: l.sandboxWorkspaceAccess,
+		SelfEvolve:             l.selfEvolve,
 	})
 
 	messages = append(messages, providers.Message{
@@ -354,15 +369,36 @@ func (l *Loop) maybeSummarize(ctx context.Context, sessionKey string) {
 		toSummarize := history[:len(history)-keepLast]
 
 		var sb string
+		var mediaKinds []string
 		for _, m := range toSummarize {
 			if m.Role == "user" {
 				sb += fmt.Sprintf("user: %s\n", m.Content)
 			} else if m.Role == "assistant" {
 				sb += fmt.Sprintf("assistant: %s\n", SanitizeAssistantContent(m.Content))
 			}
+			for _, ref := range m.MediaRefs {
+				mediaKinds = append(mediaKinds, ref.Kind)
+			}
 		}
 
 		prompt := "Provide a concise summary of this conversation, preserving key context:\n"
+		if len(mediaKinds) > 0 {
+			// Deduplicate and count media types for a compact note.
+			counts := make(map[string]int)
+			for _, k := range mediaKinds {
+				counts[k]++
+			}
+			prompt += "\nNote: user shared media files ("
+			first := true
+			for k, n := range counts {
+				if !first {
+					prompt += ", "
+				}
+				prompt += fmt.Sprintf("%d %s(s)", n, k)
+				first = false
+			}
+			prompt += ") which are no longer in context. Mention briefly if relevant.\n"
+		}
 		if summary != "" {
 			prompt += "Existing context: " + summary + "\n"
 		}

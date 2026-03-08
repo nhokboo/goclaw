@@ -1,4 +1,5 @@
 import * as React from "react";
+import { createPortal } from "react-dom";
 import { ChevronDownIcon, CheckIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -13,6 +14,8 @@ interface ComboboxProps {
   options: ComboboxOption[];
   placeholder?: string;
   className?: string;
+  /** Render dropdown into a portal container (useful inside dialogs with overflow clipping). */
+  portalContainer?: React.RefObject<HTMLElement | null>;
 }
 
 export function Combobox({
@@ -21,10 +24,13 @@ export function Combobox({
   options,
   placeholder,
   className,
+  portalContainer,
 }: ComboboxProps) {
   const [open, setOpen] = React.useState(false);
   const [search, setSearch] = React.useState("");
   const containerRef = React.useRef<HTMLDivElement>(null);
+  const dropdownRef = React.useRef<HTMLDivElement>(null);
+  const [dropdownStyle, setDropdownStyle] = React.useState<React.CSSProperties>({});
 
   // Sync search text when value changes externally — show label if available
   React.useEffect(() => {
@@ -36,13 +42,34 @@ export function Combobox({
   React.useEffect(() => {
     if (!open) return;
     const handler = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+      const target = e.target as Node;
+      if (
+        containerRef.current && !containerRef.current.contains(target) &&
+        (!dropdownRef.current || !dropdownRef.current.contains(target))
+      ) {
         setOpen(false);
       }
     };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, [open]);
+
+  // Compute dropdown position for portal mode
+  React.useLayoutEffect(() => {
+    if (!open || !portalContainer?.current || !containerRef.current) return;
+    const inputRect = containerRef.current.getBoundingClientRect();
+    const portalRect = portalContainer.current.getBoundingClientRect();
+    const left = inputRect.left - portalRect.left;
+    const maxWidth = portalRect.width - left;
+    setDropdownStyle({
+      position: "absolute",
+      top: inputRect.bottom - portalRect.top + 4,
+      left,
+      width: inputRect.width,
+      maxWidth,
+      zIndex: 50,
+    });
+  }, [open, search, portalContainer]);
 
   const filtered = React.useMemo(() => {
     if (!search) return options;
@@ -68,6 +95,32 @@ export function Combobox({
     if (!open && options.length > 0) setOpen(true);
   };
 
+  const dropdownContent = open && filtered.length > 0 && (
+    <div
+      ref={dropdownRef}
+      style={portalContainer ? dropdownStyle : undefined}
+      className={cn(
+        "bg-popover text-popover-foreground max-h-60 overflow-y-auto rounded-md border p-1 shadow-md",
+        portalContainer ? "overflow-hidden" : "absolute top-full left-0 z-50 mt-1 min-w-full",
+      )}
+    >
+      {filtered.map((o) => (
+        <button
+          key={o.value}
+          type="button"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => handleSelect(o.value)}
+          className="hover:bg-accent hover:text-accent-foreground relative flex w-full cursor-pointer items-center rounded-sm py-1.5 pr-8 pl-2 text-sm outline-hidden select-none"
+        >
+          <span className="truncate">{o.label || o.value}</span>
+          {o.value === value && (
+            <CheckIcon className="absolute right-2 size-4" />
+          )}
+        </button>
+      ))}
+    </div>
+  );
+
   return (
     <div ref={containerRef} className={cn("relative", className)}>
       <input
@@ -86,24 +139,9 @@ export function Combobox({
           onClick={() => setOpen(!open)}
         />
       )}
-      {open && filtered.length > 0 && (
-        <div className="bg-popover text-popover-foreground absolute top-full left-0 z-50 mt-1 max-h-60 min-w-full overflow-y-auto rounded-md border p-1 shadow-md">
-          {filtered.map((o) => (
-            <button
-              key={o.value}
-              type="button"
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() => handleSelect(o.value)}
-              className="hover:bg-accent hover:text-accent-foreground relative flex w-full cursor-pointer items-center rounded-sm py-1.5 pr-8 pl-2 text-sm outline-hidden select-none"
-            >
-              <span className="truncate">{o.label || o.value}</span>
-              {o.value === value && (
-                <CheckIcon className="absolute right-2 size-4" />
-              )}
-            </button>
-          ))}
-        </div>
-      )}
+      {portalContainer?.current
+        ? dropdownContent && createPortal(dropdownContent, portalContainer.current)
+        : dropdownContent}
     </div>
   );
 }

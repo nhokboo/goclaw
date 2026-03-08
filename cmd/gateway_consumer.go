@@ -45,7 +45,7 @@ func makeSchedulerRunFunc(agents *agent.Router, cfg *config.Config) scheduler.Ru
 // and routes them through the scheduler/agent loop, then publishes the response back.
 // Also handles subagent announcements: routes them through the parent agent's session
 // (matching TS subagent-announce.ts pattern) so the agent can reformulate for the user.
-func consumeInboundMessages(ctx context.Context, msgBus *bus.MessageBus, agents *agent.Router, cfg *config.Config, sched *scheduler.Scheduler, channelMgr *channels.Manager, teamStore store.TeamStore, quotaChecker *channels.QuotaChecker, delegateMgr *tools.DelegateManager) {
+func consumeInboundMessages(ctx context.Context, msgBus *bus.MessageBus, agents *agent.Router, cfg *config.Config, sched *scheduler.Scheduler, channelMgr *channels.Manager, teamStore store.TeamStore, quotaChecker *channels.QuotaChecker, delegateMgr *tools.DelegateManager, sessStore store.SessionStore, agentStore store.AgentStore) {
 	slog.Info("inbound message consumer started")
 
 	// Inbound message deduplication (matching TS src/infra/dedupe.ts + inbound-dedupe.ts).
@@ -126,6 +126,16 @@ func consumeInboundMessages(ctx context.Context, msgBus *bus.MessageBus, agents 
 				groupID = guildID
 			}
 			userID = fmt.Sprintf("group:%s:%s", msg.Channel, groupID)
+		}
+
+		// Persist friendly names from channel metadata into session + user profile.
+		if sessionMeta := extractSessionMetadata(msg, peerKind); len(sessionMeta) > 0 {
+			sessStore.SetSessionMetadata(sessionKey, sessionMeta)
+			if agentStore != nil {
+				if agentUUID, err := uuid.Parse(agentID); err == nil && agentUUID != uuid.Nil {
+					_ = agentStore.UpdateUserProfileMetadata(ctx, agentUUID, userID, sessionMeta)
+				}
+			}
 		}
 
 		// --- Quota check ---
@@ -225,7 +235,7 @@ func consumeInboundMessages(ctx context.Context, msgBus *bus.MessageBus, agents 
 
 		// Delegation announces carry media as ForwardMedia (not deleted, forwarded to output).
 		// User-uploaded media goes in Media (loaded as images for LLM, then deleted).
-		var reqMedia, fwdMedia []string
+		var reqMedia, fwdMedia []bus.MediaFile
 		if msg.Metadata["delegation_id"] != "" || msg.Metadata["subagent_id"] != "" {
 			fwdMedia = msg.Media
 		} else {
@@ -431,7 +441,7 @@ func consumeInboundMessages(ctx context.Context, msgBus *bus.MessageBus, agents 
 			fwdMedia := msg.Media
 			contentSuffix := ""
 			if origChannel == "ws" && len(msg.Media) > 0 {
-				contentSuffix = mediaToMarkdownFromPaths(msg.Media, cfg.WorkspacePath(), cfg)
+				contentSuffix = mediaToMarkdownFromPaths(msg.Media, cfg)
 				fwdMedia = nil // WS: images delivered via ContentSuffix, not ForwardMedia
 			}
 
@@ -565,7 +575,7 @@ func consumeInboundMessages(ctx context.Context, msgBus *bus.MessageBus, agents 
 			fwdMedia := msg.Media
 			contentSuffix := ""
 			if origChannel == "ws" && len(msg.Media) > 0 {
-				contentSuffix = mediaToMarkdownFromPaths(msg.Media, cfg.WorkspacePath(), cfg)
+				contentSuffix = mediaToMarkdownFromPaths(msg.Media, cfg)
 				fwdMedia = nil // WS: images delivered via ContentSuffix, not ForwardMedia
 			}
 
@@ -892,39 +902,62 @@ func overrideSessionKeyFromLocalKey(sessionKey, localKey, agentID, channel, chat
 	return sessionKey
 }
 
+// extractSessionMetadata builds a metadata map from channel InboundMessage metadata.
+// Used to persist friendly names (display_name, username, chat_title) into sessions
+// and user profiles so the web UI can show human-readable labels.
+func extractSessionMetadata(msg bus.InboundMessage, peerKind string) map[string]string {
+	meta := make(map[string]string)
+
+	// Display name: prefer first_name (Telegram), fall back to display_name (Discord)
+	if v := msg.Metadata["first_name"]; v != "" {
+		meta["display_name"] = v
+	} else if v := msg.Metadata["display_name"]; v != "" {
+		meta["display_name"] = v
+	}
+
+	if v := msg.Metadata["username"]; v != "" {
+		meta["username"] = v
+	}
+	if peerKind != "" {
+		meta["peer_kind"] = peerKind
+	}
+	if v := msg.Metadata["chat_title"]; v != "" {
+		meta["chat_title"] = v
+	}
+
+	if len(meta) == 0 {
+		return nil
+	}
+	return meta
+}
+
 // buildAnnounceOutMeta builds outbound metadata for announce messages so that
 // Send() can route replies to the correct forum topic or DM thread.
 // mediaToMarkdown converts media results to markdown image/link syntax using the
 // /v1/files/ HTTP endpoint. Used for WS channel where outbound media attachments
 // are not supported (no channel handler). Returns empty string if no media.
-func mediaToMarkdown(media []agent.MediaResult, workspace string, cfg *config.Config) string {
+// Uses absolute file paths with the /v1/files endpoint (auth-token protected).
+// Generates relative URLs (/v1/files/...) so they work regardless of the server's
+// external hostname — the browser resolves them from the current origin.
+func mediaToMarkdown(media []agent.MediaResult, cfg *config.Config) string {
 	if len(media) == 0 {
 		return ""
 	}
 
-	scheme := "http"
-	if cfg.Tailscale.EnableTLS {
-		scheme = "https"
-	}
-	host := cfg.Gateway.Host
-	if host == "" || host == "0.0.0.0" {
-		host = "localhost"
-	}
-	baseURL := fmt.Sprintf("%s://%s:%d/v1/files", scheme, host, cfg.Gateway.Port)
 	tokenQuery := ""
 	if cfg.Gateway.Token != "" {
 		tokenQuery = "?token=" + cfg.Gateway.Token
 	}
 
-	cleanRoot := filepath.Clean(workspace)
 	var parts []string
 	for _, mr := range media {
 		cleanPath := filepath.Clean(mr.Path)
-		relPath, err := filepath.Rel(cleanRoot, cleanPath)
-		if err != nil || strings.HasPrefix(relPath, "..") {
+		// Strip leading "/" so URL path is /v1/files/app/.goclaw/...
+		urlPath := strings.TrimPrefix(cleanPath, "/")
+		if urlPath == "" {
 			continue
 		}
-		fileURL := baseURL + "/" + relPath + tokenQuery
+		fileURL := "/v1/files/" + urlPath + tokenQuery
 		if strings.HasPrefix(mr.ContentType, "image/") {
 			parts = append(parts, fmt.Sprintf("![image](%s)", fileURL))
 		} else {
@@ -939,22 +972,25 @@ func mediaToMarkdown(media []agent.MediaResult, workspace string, cfg *config.Co
 
 // mediaToMarkdownFromPaths is like mediaToMarkdown but accepts raw file paths
 // ([]string from bus.InboundMessage.Media) instead of []agent.MediaResult.
-func mediaToMarkdownFromPaths(paths []string, workspace string, cfg *config.Config) string {
-	if len(paths) == 0 {
+func mediaToMarkdownFromPaths(files []bus.MediaFile, cfg *config.Config) string {
+	if len(files) == 0 {
 		return ""
 	}
-	media := make([]agent.MediaResult, 0, len(paths))
-	for _, p := range paths {
-		ct := mime.TypeByExtension(filepath.Ext(p))
+	media := make([]agent.MediaResult, 0, len(files))
+	for _, f := range files {
+		ct := f.MimeType
+		if ct == "" {
+			ct = mime.TypeByExtension(filepath.Ext(f.Path))
+		}
 		if ct == "" {
 			ct = "application/octet-stream"
 		}
 		media = append(media, agent.MediaResult{
-			Path:        p,
+			Path:        f.Path,
 			ContentType: ct,
 		})
 	}
-	return mediaToMarkdown(media, workspace, cfg)
+	return mediaToMarkdown(media, cfg)
 }
 
 func buildAnnounceOutMeta(localKey string) map[string]string {

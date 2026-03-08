@@ -27,6 +27,7 @@ import (
 	"github.com/nextlevelbuilder/goclaw/internal/gateway/methods"
 	httpapi "github.com/nextlevelbuilder/goclaw/internal/http"
 	mcpbridge "github.com/nextlevelbuilder/goclaw/internal/mcp"
+	"github.com/nextlevelbuilder/goclaw/internal/media"
 	"github.com/nextlevelbuilder/goclaw/internal/permissions"
 	"github.com/nextlevelbuilder/goclaw/internal/providers"
 	"github.com/nextlevelbuilder/goclaw/internal/sandbox"
@@ -188,6 +189,10 @@ func runGateway() {
 	toolsReg.Register(tools.NewReadImageTool(providerRegistry))
 	toolsReg.Register(tools.NewCreateImageTool(providerRegistry))
 
+	// Audio generation tool (MiniMax music + ElevenLabs sound effects)
+	toolsReg.Register(tools.NewCreateAudioTool(providerRegistry,
+		cfg.Tts.ElevenLabs.APIKey, cfg.Tts.ElevenLabs.BaseURL))
+
 	// TTS (text-to-speech) system
 	ttsMgr := setupTTS(cfg)
 	if ttsMgr != nil {
@@ -245,6 +250,11 @@ func runGateway() {
 				if meta.OriginSessionKey != "" {
 					batchMeta["origin_session_key"] = meta.OriginSessionKey
 				}
+				// Collect media from all items in the batch.
+				var batchMedia []bus.MediaFile
+				for _, item := range items {
+					batchMedia = append(batchMedia, item.Media...)
+				}
 				msgBus.PublishInbound(bus.InboundMessage{
 					Channel:  "system",
 					SenderID: senderID,
@@ -252,6 +262,7 @@ func runGateway() {
 					Content:  content,
 					UserID:   meta.OriginUserID,
 					Metadata: batchMeta,
+					Media:    batchMedia,
 				})
 			},
 			func(parentID string) int {
@@ -306,9 +317,11 @@ func runGateway() {
 
 	// Block exec from accessing sensitive directories (data dir, .goclaw, config file).
 	// Prevents `cp /app/data/config.json workspace/` and similar exfiltration.
+	// Exception: .goclaw/skills-store/ is allowed (skills may contain executable scripts).
 	if execTool, ok := toolsReg.Get("exec"); ok {
 		if et, ok := execTool.(*tools.ExecTool); ok {
 			et.DenyPaths(dataDir, ".goclaw/")
+			et.AllowPathExemptions(".goclaw/skills-store/")
 			if cfgPath := os.Getenv("GOCLAW_CONFIG"); cfgPath != "" {
 				et.DenyPaths(cfgPath)
 			}
@@ -340,6 +353,16 @@ func runGateway() {
 	}
 	if pgStores.Tracing != nil {
 		traceCollector = tracing.NewCollector(pgStores.Tracing)
+		traceCollector.OnFlush = func(traceIDs []uuid.UUID) {
+			ids := make([]string, len(traceIDs))
+			for i, id := range traceIDs {
+				ids[i] = id.String()
+			}
+			msgBus.Broadcast(bus.Event{
+				Name:    protocol.EventTraceUpdated,
+				Payload: map[string]any{"trace_ids": ids},
+			})
+		}
 		traceCollector.Start()
 		slog.Info("LLM tracing enabled")
 	}
@@ -461,6 +484,7 @@ func runGateway() {
 	skillsLoader := skills.NewLoader(workspace, globalSkillsDir, "")
 	skillSearchTool := tools.NewSkillSearchTool(skillsLoader)
 	toolsReg.Register(skillSearchTool)
+	toolsReg.Register(tools.NewUseSkillTool())
 	slog.Info("skill_search tool registered", "skills", len(skillsLoader.ListSkills()))
 
 	// Wire skills-store directory into filesystem loader so agents
@@ -583,7 +607,8 @@ func runGateway() {
 	}
 
 	var mcpPool *mcpbridge.Pool
-	contextFileInterceptor, delegateMgr, mcpPool = wireExtras(pgStores, agentRouter, providerRegistry, msgBus, pgStores.Sessions, toolsReg, toolPE, skillsLoader, hasMemory, traceCollector, workspace, cfg.Gateway.InjectionAction, cfg, sandboxMgr, dynamicLoader, redisClient)
+	var mediaStore *media.Store
+	contextFileInterceptor, delegateMgr, mcpPool, mediaStore = wireExtras(pgStores, agentRouter, providerRegistry, msgBus, pgStores.Sessions, toolsReg, toolPE, skillsLoader, hasMemory, traceCollector, workspace, cfg.Gateway.InjectionAction, cfg, sandboxMgr, dynamicLoader, redisClient)
 	if mcpPool != nil {
 		defer mcpPool.Stop()
 	}
@@ -621,8 +646,20 @@ func runGateway() {
 		server.SetBuiltinToolsHandler(builtinToolsH)
 	}
 
-	// Workspace file serving endpoint
-	server.SetFilesHandler(httpapi.NewFilesHandler(workspace, cfg.Gateway.Token))
+	// Workspace file serving endpoint — serves files by absolute path, auth-token protected.
+	// Supports media from any agent workspace (each agent has its own workspace from DB).
+	server.SetFilesHandler(httpapi.NewFilesHandler(cfg.Gateway.Token))
+
+	// Storage file management — browse/delete files under ~/.goclaw/ (excluding skills dirs).
+	server.SetStorageHandler(httpapi.NewStorageHandler(config.ExpandHome("~/.goclaw"), cfg.Gateway.Token))
+
+	// Media upload endpoint — accepts multipart file uploads, returns temp path + MIME type.
+	server.SetMediaUploadHandler(httpapi.NewMediaUploadHandler(cfg.Gateway.Token))
+
+	// Media serve endpoint — serves persisted media files by ID for WS/web clients.
+	if mediaStore != nil {
+		server.SetMediaServeHandler(httpapi.NewMediaServeHandler(mediaStore, cfg.Gateway.Token))
+	}
 
 	// Seed + apply builtin tool disables
 	if pgStores.BuiltinTools != nil {
@@ -957,7 +994,7 @@ func runGateway() {
 		webFetchTool.UpdatePolicy(updatedCfg.Tools.WebFetch.Policy, updatedCfg.Tools.WebFetch.AllowedDomains, updatedCfg.Tools.WebFetch.BlockedDomains)
 	})
 
-	go consumeInboundMessages(ctx, msgBus, agentRouter, cfg, sched, channelMgr, consumerTeamStore, quotaChecker, delegateMgr)
+	go consumeInboundMessages(ctx, msgBus, agentRouter, cfg, sched, channelMgr, consumerTeamStore, quotaChecker, delegateMgr, pgStores.Sessions, pgStores.Agents)
 
 	go func() {
 		sig := <-sigCh

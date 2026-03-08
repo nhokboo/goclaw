@@ -5,6 +5,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/nextlevelbuilder/goclaw/internal/bus"
 )
 
 // AnnounceQueueItem represents a single subagent result waiting to be announced.
@@ -13,6 +15,7 @@ type AnnounceQueueItem struct {
 	Label      string
 	Status     string // "completed", "failed", "cancelled"
 	Result     string
+	Media      []bus.MediaFile // media files from tool results
 	Runtime    time.Duration
 	Iterations int
 }
