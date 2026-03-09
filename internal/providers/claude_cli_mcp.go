@@ -133,19 +133,19 @@ func (d *MCPConfigData) writeMCPConfigInternal(sessionKey, agentID, userID, chan
 		if d.GatewayToken != "" {
 			headers["Authorization"] = "Bearer " + d.GatewayToken
 		}
-		if agentID != "" {
+		if agentID != "" && !strings.ContainsAny(agentID, "\r\n\x00") {
 			headers["X-Agent-ID"] = agentID
 		}
 		if userID != "" && !strings.ContainsAny(userID, "\r\n\x00") {
 			headers["X-User-ID"] = userID
 		}
-		if channel != "" {
+		if channel != "" && !strings.ContainsAny(channel, "\r\n\x00") {
 			headers["X-Channel"] = channel
 		}
-		if chatID != "" {
+		if chatID != "" && !strings.ContainsAny(chatID, "\r\n\x00") {
 			headers["X-Chat-ID"] = chatID
 		}
-		if peerKind != "" {
+		if peerKind != "" && !strings.ContainsAny(peerKind, "\r\n\x00") {
 			headers["X-Peer-Kind"] = peerKind
 		}
 		// HMAC signature over agent context to prevent header forgery
