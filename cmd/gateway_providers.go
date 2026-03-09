@@ -111,14 +111,10 @@ func registerProviders(registry *providers.Registry, cfg *config.Config) {
 		if cfg.Providers.ClaudeCLI.PermMode != "" {
 			opts = append(opts, providers.WithClaudeCLIPermMode(cfg.Providers.ClaudeCLI.PermMode))
 		}
-		// Build MCP config: external MCP servers + GoClaw bridge (built-in tools via streamable-http)
+		// Build per-session MCP config: external MCP servers + GoClaw bridge
 		gatewayAddr := loopbackAddr(cfg.Gateway.Host, cfg.Gateway.Port)
-		mcpPath, mcpCleanup, err := providers.BuildCLIMCPConfig(cfg.Tools.McpServers, gatewayAddr, cfg.Gateway.Token)
-		if err != nil {
-			slog.Warn("failed to build MCP config for claude-cli", "error", err)
-		} else if mcpPath != "" {
-			opts = append(opts, providers.WithClaudeCLIMCPConfig(mcpPath, mcpCleanup))
-		}
+		mcpData := providers.BuildCLIMCPConfigData(cfg.Tools.McpServers, gatewayAddr, cfg.Gateway.Token)
+		opts = append(opts, providers.WithClaudeCLIMCPConfigData(mcpData))
 		// Enable GoClaw security hooks (shell deny patterns, path restrictions)
 		opts = append(opts, providers.WithClaudeCLISecurityHooks(
 			cfg.Providers.ClaudeCLI.BaseWorkDir, true))
@@ -133,12 +129,12 @@ func buildMCPServerLookup(mcpStore store.MCPServerStore) providers.MCPServerLook
 	if mcpStore == nil {
 		return nil
 	}
-	return func(agentID string) []providers.MCPServerEntry {
+	return func(ctx context.Context, agentID string) []providers.MCPServerEntry {
 		aid, err := uuid.Parse(agentID)
 		if err != nil {
 			return nil
 		}
-		accessible, err := mcpStore.ListAccessible(context.Background(), aid, "")
+		accessible, err := mcpStore.ListAccessible(ctx, aid, "")
 		if err != nil {
 			slog.Warn("claude-cli: failed to list agent MCP servers", "agent_id", agentID, "error", err)
 			return nil

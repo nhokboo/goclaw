@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"mime"
 	"path/filepath"
 	"strings"
 
@@ -119,6 +120,8 @@ func forwardMediaToOutbound(ctx context.Context, msgBus *bus.MessageBus, toolNam
 	channel := tools.ToolChannelFromCtx(ctx)
 	chatID := tools.ToolChatIDFromCtx(ctx)
 	if channel == "" || chatID == "" {
+		slog.Debug("mcp.bridge: skipping media forward, missing channel context",
+			"tool", toolName, "channel", channel, "chat_id", chatID)
 		return
 	}
 
@@ -149,42 +152,20 @@ func forwardMediaToOutbound(ctx context.Context, msgBus *bus.MessageBus, toolNam
 		"tool", toolName, "channel", channel, "files", len(attachments))
 }
 
-// mimeFromExt returns a MIME type for common file extensions.
-// Covers types not reliably handled by mime.TypeByExtension on all platforms.
+// mimeFromExt returns a MIME type for a file extension.
+// Uses Go stdlib first, falls back to a small map for types not reliably
+// handled by mime.TypeByExtension on all platforms (e.g. .opus, .webp).
 func mimeFromExt(ext string) string {
+	if ct := mime.TypeByExtension(ext); ct != "" {
+		return ct
+	}
 	switch strings.ToLower(ext) {
-	case ".png":
-		return "image/png"
-	case ".jpg", ".jpeg":
-		return "image/jpeg"
-	case ".gif":
-		return "image/gif"
 	case ".webp":
 		return "image/webp"
-	case ".mp4":
-		return "video/mp4"
-	case ".ogg", ".opus":
+	case ".opus":
 		return "audio/ogg"
-	case ".mp3":
-		return "audio/mpeg"
-	case ".wav":
-		return "audio/wav"
-	case ".pdf":
-		return "application/pdf"
 	case ".md":
 		return "text/markdown"
-	case ".txt":
-		return "text/plain"
-	case ".csv":
-		return "text/csv"
-	case ".json":
-		return "application/json"
-	case ".html", ".htm":
-		return "text/html"
-	case ".xml":
-		return "application/xml"
-	case ".zip":
-		return "application/zip"
 	default:
 		return "application/octet-stream"
 	}

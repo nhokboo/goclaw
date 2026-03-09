@@ -2,6 +2,7 @@ package providers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -70,18 +71,16 @@ func (p *ClaudeCLIProvider) buildArgs(model, workDir, mcpConfigPath string, cliS
 	return args
 }
 
-// resolveMCPConfigPath returns the MCP config file path for this call.
-// If mcpConfigData is set (managed mode), writes a per-session config with agent context.
-// Otherwise falls back to the legacy global mcpConfigPath.
-func (p *ClaudeCLIProvider) resolveMCPConfigPath(sessionKey string, bc BridgeContext) string {
-	if p.mcpConfigData != nil {
-		path := p.mcpConfigData.WriteMCPConfig(sessionKey, bc)
-		if path != "" {
-			p.mcpConfigDirs.Store(filepath.Dir(path), struct{}{})
-		}
-		return path
+// resolveMCPConfigPath writes a per-session MCP config with agent context and returns its path.
+func (p *ClaudeCLIProvider) resolveMCPConfigPath(ctx context.Context, sessionKey string, bc BridgeContext) string {
+	if p.mcpConfigData == nil {
+		return ""
 	}
-	return p.mcpConfigPath
+	path := p.mcpConfigData.WriteMCPConfig(ctx, sessionKey, bc)
+	if path != "" {
+		p.mcpConfigDirs.Store(filepath.Dir(path), struct{}{})
+	}
+	return path
 }
 
 // ensureWorkDir creates and returns a stable work directory for the given session key.

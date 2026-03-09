@@ -35,12 +35,10 @@ type ClaudeCLIProvider struct {
 	cliPath            string // path to claude binary (default: "claude")
 	defaultModel       string // default: "sonnet"
 	baseWorkDir        string // base dir for agent workspaces
-	mcpConfigPath      string // legacy: pre-built global MCP config file path (standalone mode)
-	mcpConfigData      *MCPConfigData // per-session MCP config data (managed mode)
+	mcpConfigData      *MCPConfigData // per-session MCP config data
 	permMode           string // permission mode (default: "bypassPermissions")
 	hooksSettingsPath  string // generated settings.json with security hooks (empty = no hooks)
 	hooksCleanup       func() // cleanup function for hooks temp files
-	mcpCleanup         func() // cleanup function for MCP config temp file
 	mu                 sync.Mutex // protects workdir creation
 	sessionMu          sync.Map   // key: string, value: *sync.Mutex — per-session lock
 	mcpConfigDirs      sync.Map   // key: string (dir path), value: struct{} — tracks per-session MCP config dirs for cleanup
@@ -67,17 +65,7 @@ func WithClaudeCLIWorkDir(dir string) ClaudeCLIOption {
 	}
 }
 
-// WithClaudeCLIMCPConfig sets the legacy global MCP config file path (standalone mode).
-func WithClaudeCLIMCPConfig(path string, cleanup ...func()) ClaudeCLIOption {
-	return func(p *ClaudeCLIProvider) {
-		p.mcpConfigPath = path
-		if len(cleanup) > 0 && cleanup[0] != nil {
-			p.mcpCleanup = cleanup[0]
-		}
-	}
-}
-
-// WithClaudeCLIMCPConfigData sets the per-session MCP config data (managed mode).
+// WithClaudeCLIMCPConfigData sets the per-session MCP config data.
 // Per-session configs are written on each Chat/ChatStream call with agent context.
 func WithClaudeCLIMCPConfigData(data *MCPConfigData) ClaudeCLIOption {
 	return func(p *ClaudeCLIProvider) {
@@ -130,12 +118,9 @@ func NewClaudeCLIProvider(cliPath string, opts ...ClaudeCLIOption) *ClaudeCLIPro
 func (p *ClaudeCLIProvider) Name() string        { return "claude-cli" }
 func (p *ClaudeCLIProvider) DefaultModel() string { return p.defaultModel }
 
-// Close cleans up temp files (MCP config, hooks settings). Implements io.Closer.
+// Close cleans up temp files (per-session MCP configs, hooks settings). Implements io.Closer.
 func (p *ClaudeCLIProvider) Close() error {
-	if p.mcpCleanup != nil {
-		p.mcpCleanup()
-	}
-	// Clean up only the per-session MCP config directories this provider created
+	// Clean up per-session MCP config directories this provider created
 	p.mcpConfigDirs.Range(func(key, _ any) bool {
 		dir := key.(string)
 		if err := os.RemoveAll(dir); err != nil {

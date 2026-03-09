@@ -255,12 +255,15 @@ func bridgeContextMiddleware(gatewayToken string, next http.Handler) http.Handle
 		ctx := r.Context()
 		agentIDStr := r.Header.Get("X-Agent-ID")
 		userID := r.Header.Get("X-User-ID")
+		channel := r.Header.Get("X-Channel")
+		chatID := r.Header.Get("X-Chat-ID")
+		peerKind := r.Header.Get("X-Peer-Kind")
 
 		if agentIDStr != "" || userID != "" {
-			// Verify HMAC signature when gateway token is configured
+			// Verify HMAC signature over all context fields when gateway token is configured
 			if gatewayToken != "" {
 				sig := r.Header.Get("X-Bridge-Sig")
-				if !providers.VerifyBridgeContext(gatewayToken, agentIDStr, userID, sig) {
+				if !providers.VerifyBridgeContext(gatewayToken, agentIDStr, userID, channel, chatID, peerKind, sig) {
 					slog.Warn("security.mcp_bridge: invalid bridge context signature",
 						"agent_id", agentIDStr, "user_id", userID)
 					http.Error(w, `{"error":"invalid bridge context signature"}`, http.StatusForbidden)
@@ -279,13 +282,13 @@ func bridgeContextMiddleware(gatewayToken string, next http.Handler) http.Handle
 		}
 
 		// Inject channel routing context for tools like message, cron, etc.
-		if channel := r.Header.Get("X-Channel"); channel != "" {
+		if channel != "" {
 			ctx = tools.WithToolChannel(ctx, channel)
 		}
-		if chatID := r.Header.Get("X-Chat-ID"); chatID != "" {
+		if chatID != "" {
 			ctx = tools.WithToolChatID(ctx, chatID)
 		}
-		if peerKind := r.Header.Get("X-Peer-Kind"); peerKind != "" {
+		if peerKind != "" {
 			ctx = tools.WithToolPeerKind(ctx, peerKind)
 		}
 

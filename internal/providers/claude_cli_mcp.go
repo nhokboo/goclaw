@@ -1,6 +1,7 @@
 package providers
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -11,7 +12,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/google/uuid"
 	"github.com/nextlevelbuilder/goclaw/internal/config"
 )
 
@@ -28,7 +28,7 @@ type MCPServerEntry struct {
 
 // MCPServerLookup returns accessible MCP servers for a given agent ID.
 // Used to inject per-agent DB-backed MCP servers into CLI MCP config.
-type MCPServerLookup func(agentID string) []MCPServerEntry
+type MCPServerLookup func(ctx context.Context, agentID string) []MCPServerEntry
 
 // MCPConfigData holds the base MCP server entries built at startup.
 // Per-session configs are written via WriteMCPConfig with agent context injected.
@@ -98,11 +98,11 @@ type BridgeContext struct {
 // Files are stored at ~/.goclaw/mcp-configs/<safe-session-key>/mcp-config.json,
 // outside the agent's workDir so tokens are not exposed.
 // Skips write if content is unchanged. Returns the file path.
-func (d *MCPConfigData) WriteMCPConfig(sessionKey string, bc BridgeContext) string {
-	return d.writeMCPConfigInternal(sessionKey, bc.AgentID, bc.UserID, bc.Channel, bc.ChatID, bc.PeerKind)
+func (d *MCPConfigData) WriteMCPConfig(ctx context.Context, sessionKey string, bc BridgeContext) string {
+	return d.writeMCPConfigInternal(ctx, sessionKey, bc.AgentID, bc.UserID, bc.Channel, bc.ChatID, bc.PeerKind)
 }
 
-func (d *MCPConfigData) writeMCPConfigInternal(sessionKey, agentID, userID, channel, chatID, peerKind string) string {
+func (d *MCPConfigData) writeMCPConfigInternal(ctx context.Context, sessionKey, agentID, userID, channel, chatID, peerKind string) string {
 	if d == nil || (len(d.Servers) == 0 && d.GatewayAddr == "" && d.AgentMCPLookup == nil) {
 		return ""
 	}
@@ -116,7 +116,7 @@ func (d *MCPConfigData) writeMCPConfigInternal(sessionKey, agentID, userID, chan
 
 	// Inject per-agent MCP servers from DB (if lookup is configured and agentID is set)
 	if d.AgentMCPLookup != nil && agentID != "" {
-		for _, srv := range d.AgentMCPLookup(agentID) {
+		for _, srv := range d.AgentMCPLookup(ctx, agentID) {
 			if _, exists := servers[srv.Name]; exists {
 				continue // don't override static/bridge entries
 			}
@@ -148,9 +148,9 @@ func (d *MCPConfigData) writeMCPConfigInternal(sessionKey, agentID, userID, chan
 		if peerKind != "" && !strings.ContainsAny(peerKind, "\r\n\x00") {
 			headers["X-Peer-Kind"] = peerKind
 		}
-		// HMAC signature over agent context to prevent header forgery
+		// HMAC signature over all context fields to prevent header forgery
 		if d.GatewayToken != "" && (agentID != "" || userID != "") {
-			headers["X-Bridge-Sig"] = SignBridgeContext(d.GatewayToken, agentID, userID)
+			headers["X-Bridge-Sig"] = SignBridgeContext(d.GatewayToken, agentID, userID, channel, chatID, peerKind)
 		}
 
 		bridgeEntry := map[string]interface{}{
@@ -202,52 +202,6 @@ func (d *MCPConfigData) writeMCPConfigInternal(sessionKey, agentID, userID, chan
 	return path
 }
 
-// BuildCLIMCPConfig is the legacy helper that builds and writes a global MCP config file.
-// Used at startup for standalone mode. For per-session configs, use BuildCLIMCPConfigData + WriteMCPConfig.
-func BuildCLIMCPConfig(servers map[string]*config.MCPServerConfig, gatewayAddr string, gatewayToken ...string) (string, func(), error) {
-	d := BuildCLIMCPConfigData(servers, gatewayAddr, gatewayToken...)
-
-	// For legacy path, build bridge entry without agent context
-	if d.GatewayAddr != "" {
-		headers := make(map[string]string)
-		if d.GatewayToken != "" {
-			headers["Authorization"] = "Bearer " + d.GatewayToken
-		}
-		bridgeEntry := map[string]interface{}{
-			"url":  fmt.Sprintf("http://%s/mcp/bridge", d.GatewayAddr),
-			"type": "http",
-		}
-		if len(headers) > 0 {
-			bridgeEntry["headers"] = headers
-		}
-		d.Servers["goclaw-bridge"] = bridgeEntry
-	}
-
-	if len(d.Servers) == 0 {
-		return "", func() {}, nil
-	}
-
-	data, err := json.MarshalIndent(map[string]interface{}{"mcpServers": d.Servers}, "", "  ")
-	if err != nil {
-		return "", nil, fmt.Errorf("marshal mcp config: %w", err)
-	}
-
-	tmpDir := filepath.Join(os.TempDir(), "goclaw-mcp-configs")
-	if err := os.MkdirAll(tmpDir, 0700); err != nil {
-		return "", nil, fmt.Errorf("create mcp config dir: %w", err)
-	}
-
-	tmpFile := filepath.Join(tmpDir, fmt.Sprintf("mcp-%s.json", uuid.New().String()[:8]))
-	if err := os.WriteFile(tmpFile, data, 0600); err != nil {
-		return "", nil, fmt.Errorf("write mcp config: %w", err)
-	}
-
-	cleanup := func() {
-		os.Remove(tmpFile)
-	}
-
-	return tmpFile, cleanup, nil
-}
 
 // mcpServerEntryToConfig converts an MCPServerEntry to the CLI MCP config format.
 func mcpServerEntryToConfig(srv MCPServerEntry) map[string]interface{} {
@@ -299,15 +253,16 @@ func sanitizePathSegment(s string) string {
 	return safe
 }
 
-// SignBridgeContext computes HMAC-SHA256(key, agentID+"|"+userID) for bridge header integrity.
-func SignBridgeContext(key, agentID, userID string) string {
+// SignBridgeContext computes HMAC-SHA256 over all bridge context fields to prevent forgery.
+// Payload: agentID|userID|channel|chatID|peerKind
+func SignBridgeContext(key, agentID, userID, channel, chatID, peerKind string) string {
 	mac := hmac.New(sha256.New, []byte(key))
-	mac.Write([]byte(agentID + "|" + userID))
+	mac.Write([]byte(agentID + "|" + userID + "|" + channel + "|" + chatID + "|" + peerKind))
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-// VerifyBridgeContext checks the HMAC signature against the expected agent/user context.
-func VerifyBridgeContext(key, agentID, userID, sig string) bool {
-	expected := SignBridgeContext(key, agentID, userID)
+// VerifyBridgeContext checks the HMAC signature against the expected bridge context.
+func VerifyBridgeContext(key, agentID, userID, channel, chatID, peerKind, sig string) bool {
+	expected := SignBridgeContext(key, agentID, userID, channel, chatID, peerKind)
 	return hmac.Equal([]byte(expected), []byte(sig))
 }

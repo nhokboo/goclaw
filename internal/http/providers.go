@@ -30,6 +30,7 @@ func NewProvidersHandler(s store.ProviderStore, secretStore store.ConfigSecretsS
 }
 
 // SetMCPServerLookup sets the per-agent MCP server lookup for Claude CLI providers.
+// Must be called before serving requests (not thread-safe).
 func (h *ProvidersHandler) SetMCPServerLookup(lookup providers.MCPServerLookup) {
 	h.mcpLookup = lookup
 }
