@@ -51,17 +51,12 @@ var BridgeToolNames = map[string]bool{
 // NewBridgeServer creates a StreamableHTTPServer that exposes GoClaw tools as MCP tools.
 // It reads tools from the registry, filters to BridgeToolNames, and serves them
 // over streamable-http transport (stateless mode).
-// msgBus is optional; when provided, tools that produce media (deliver:true) will
+// msgBus is optional; when non-nil, tools that produce media (deliver:true) will
 // publish file attachments directly to the outbound bus.
-func NewBridgeServer(reg *tools.Registry, version string, msgBus ...*bus.MessageBus) *mcpserver.StreamableHTTPServer {
+func NewBridgeServer(reg *tools.Registry, version string, msgBus *bus.MessageBus) *mcpserver.StreamableHTTPServer {
 	srv := mcpserver.NewMCPServer("goclaw-bridge", version,
 		mcpserver.WithToolCapabilities(false),
 	)
-
-	var mb *bus.MessageBus
-	if len(msgBus) > 0 {
-		mb = msgBus[0]
-	}
 
 	// Register each safe tool from the GoClaw registry
 	var registered int
@@ -72,7 +67,7 @@ func NewBridgeServer(reg *tools.Registry, version string, msgBus ...*bus.Message
 		}
 
 		mcpTool := convertToMCPTool(t)
-		handler := makeToolHandler(reg, name, mb)
+		handler := makeToolHandler(reg, name, msgBus)
 		srv.AddTool(mcpTool, handler)
 		registered++
 	}
@@ -110,42 +105,52 @@ func makeToolHandler(reg *tools.Registry, toolName string, msgBus *bus.MessageBu
 		// Forward media files to the outbound bus so they reach the user as attachments.
 		// This is necessary because Claude CLI processes tool results internally —
 		// GoClaw's agent loop never sees result.Media from bridge tool calls.
-		if msgBus != nil && len(result.Media) > 0 {
-			channel := tools.ToolChannelFromCtx(ctx)
-			chatID := tools.ToolChatIDFromCtx(ctx)
-			if channel != "" && chatID != "" {
-				var attachments []bus.MediaAttachment
-				for _, mf := range result.Media {
-					ct := mf.MimeType
-					if ct == "" {
-						ct = mimeFromExt(filepath.Ext(mf.Path))
-					}
-					attachments = append(attachments, bus.MediaAttachment{
-						URL:         mf.Path,
-						ContentType: ct,
-					})
-				}
-				peerKind := tools.ToolPeerKindFromCtx(ctx)
-				var meta map[string]string
-				if peerKind == "group" {
-					meta = map[string]string{"group_id": chatID}
-				}
-				msgBus.PublishOutbound(bus.OutboundMessage{
-					Channel:  channel,
-					ChatID:   chatID,
-					Media:    attachments,
-					Metadata: meta,
-				})
-				slog.Debug("mcp.bridge: forwarded media to outbound bus",
-					"tool", toolName, "channel", channel, "files", len(attachments))
-			}
-		}
+		forwardMediaToOutbound(ctx, msgBus, toolName, result)
 
 		return mcpgo.NewToolResultText(result.ForLLM), nil
 	}
 }
 
+// forwardMediaToOutbound publishes media files from a tool result to the outbound bus.
+func forwardMediaToOutbound(ctx context.Context, msgBus *bus.MessageBus, toolName string, result *tools.Result) {
+	if msgBus == nil || len(result.Media) == 0 {
+		return
+	}
+	channel := tools.ToolChannelFromCtx(ctx)
+	chatID := tools.ToolChatIDFromCtx(ctx)
+	if channel == "" || chatID == "" {
+		return
+	}
+
+	var attachments []bus.MediaAttachment
+	for _, mf := range result.Media {
+		ct := mf.MimeType
+		if ct == "" {
+			ct = mimeFromExt(filepath.Ext(mf.Path))
+		}
+		attachments = append(attachments, bus.MediaAttachment{
+			URL:         mf.Path,
+			ContentType: ct,
+		})
+	}
+
+	peerKind := tools.ToolPeerKindFromCtx(ctx)
+	var meta map[string]string
+	if peerKind == "group" {
+		meta = map[string]string{"group_id": chatID}
+	}
+	msgBus.PublishOutbound(bus.OutboundMessage{
+		Channel:  channel,
+		ChatID:   chatID,
+		Media:    attachments,
+		Metadata: meta,
+	})
+	slog.Debug("mcp.bridge: forwarded media to outbound bus",
+		"tool", toolName, "channel", channel, "files", len(attachments))
+}
+
 // mimeFromExt returns a MIME type for common file extensions.
+// Covers types not reliably handled by mime.TypeByExtension on all platforms.
 func mimeFromExt(ext string) string {
 	switch strings.ToLower(ext) {
 	case ".png":

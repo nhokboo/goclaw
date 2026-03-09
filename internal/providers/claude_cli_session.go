@@ -131,12 +131,12 @@ func extractFromMessages(msgs []Message) (systemPrompt, userMsg string, images [
 	return
 }
 
-// extractAgentID gets agent_id from Options map.
-func extractAgentID(opts map[string]interface{}) string {
+// extractStringOpt gets a string value from Options map by key.
+func extractStringOpt(opts map[string]interface{}, key string) string {
 	if opts == nil {
 		return ""
 	}
-	if v, ok := opts[OptAgentID]; ok {
+	if v, ok := opts[key]; ok {
 		if s, ok := v.(string); ok {
 			return s
 		}
@@ -144,25 +144,12 @@ func extractAgentID(opts map[string]interface{}) string {
 	return ""
 }
 
-// extractUserID gets user_id from Options map.
-func extractUserID(opts map[string]interface{}) string {
-	if opts == nil {
-		return ""
-	}
-	if v, ok := opts[OptUserID]; ok {
-		if s, ok := v.(string); ok {
-			return s
-		}
-	}
-	return ""
-}
-
-// extractDisableTools checks if disable_tools is set to true in Options.
-func extractDisableTools(opts map[string]interface{}) bool {
+// extractBoolOpt gets a bool value from Options map by key.
+func extractBoolOpt(opts map[string]interface{}, key string) bool {
 	if opts == nil {
 		return false
 	}
-	if v, ok := opts[OptDisableTools]; ok {
+	if v, ok := opts[key]; ok {
 		if b, ok := v.(bool); ok {
 			return b
 		}
@@ -170,56 +157,15 @@ func extractDisableTools(opts map[string]interface{}) bool {
 	return false
 }
 
-// extractChannel gets channel from Options map.
-func extractChannel(opts map[string]interface{}) string {
-	if opts == nil {
-		return ""
+// bridgeContextFromOpts builds a BridgeContext from the Options map.
+func bridgeContextFromOpts(opts map[string]interface{}) BridgeContext {
+	return BridgeContext{
+		AgentID:  extractStringOpt(opts, OptAgentID),
+		UserID:   extractStringOpt(opts, OptUserID),
+		Channel:  extractStringOpt(opts, OptChannel),
+		ChatID:   extractStringOpt(opts, OptChatID),
+		PeerKind: extractStringOpt(opts, OptPeerKind),
 	}
-	if v, ok := opts[OptChannel]; ok {
-		if s, ok := v.(string); ok {
-			return s
-		}
-	}
-	return ""
-}
-
-// extractChatID gets chat_id from Options map.
-func extractChatID(opts map[string]interface{}) string {
-	if opts == nil {
-		return ""
-	}
-	if v, ok := opts[OptChatID]; ok {
-		if s, ok := v.(string); ok {
-			return s
-		}
-	}
-	return ""
-}
-
-// extractPeerKind gets peer_kind from Options map.
-func extractPeerKind(opts map[string]interface{}) string {
-	if opts == nil {
-		return ""
-	}
-	if v, ok := opts[OptPeerKind]; ok {
-		if s, ok := v.(string); ok {
-			return s
-		}
-	}
-	return ""
-}
-
-// extractSessionKey gets session_key from Options map.
-func extractSessionKey(opts map[string]interface{}) string {
-	if opts == nil {
-		return ""
-	}
-	if v, ok := opts[OptSessionKey]; ok {
-		if s, ok := v.(string); ok {
-			return s
-		}
-	}
-	return ""
 }
 
 // defaultCLIWorkDir returns ~/.goclaw/cli-workspaces, falling back to temp dir.
