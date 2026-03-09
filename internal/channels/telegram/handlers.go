@@ -347,6 +347,22 @@ func (c *Channel) handleMessage(ctx context.Context, update telego.Update) {
 		}
 	}
 
+	// --- Empty mention gate ---
+	// If the message is just a bare @mention with no actual content and there's
+	// no pending history context, skip the LLM call entirely to save tokens.
+	if isGroup {
+		stripped := content
+		if botUsername := c.bot.Username(); botUsername != "" {
+			stripped = strings.ReplaceAll(stripped, "@"+botUsername, "")
+			stripped = strings.TrimSpace(stripped)
+		}
+		if stripped == "" && c.groupHistory.GetEntries(localKey) == nil {
+			slog.Debug("telegram: bare mention with no content or history, skipping LLM",
+				"chat_id", chatID, "sender", senderLabel)
+			return
+		}
+	}
+
 	slog.Debug("telegram message received",
 		"sender_id", senderID,
 		"chat_id", fmt.Sprintf("%d", chatID),
