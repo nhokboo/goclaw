@@ -5,13 +5,14 @@ package providers
 
 // cliJSONResponse is the final result envelope from `--output-format json`.
 type cliJSONResponse struct {
-	Type      string    `json:"type"`       // "result"
-	Subtype   string    `json:"subtype"`    // "success", "error"
-	Result    string    `json:"result"`     // text response
-	SessionID string    `json:"session_id"` // CLI session UUID
-	Model     string    `json:"model"`
-	CostUSD   float64   `json:"cost_usd"`
-	Usage     *cliUsage `json:"usage"`
+	Type      string        `json:"type"`                // "result"
+	Subtype   string        `json:"subtype"`             // "success", "error"
+	Result    string        `json:"result"`              // text response (may be empty when content is in Message)
+	Message   *cliStreamMsg `json:"message,omitempty"`   // content blocks (newer CLI versions)
+	SessionID string        `json:"session_id"`          // CLI session UUID
+	Model     string        `json:"model"`
+	CostUSD   float64       `json:"cost_usd"`
+	Usage     *cliUsage     `json:"usage"`
 }
 
 // cliUsage maps Claude CLI usage counters.

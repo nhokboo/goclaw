@@ -207,6 +207,26 @@ func sessionFileExists(workDir string, sessionID uuid.UUID) bool {
 	return err == nil
 }
 
+// deleteSessionFile removes the CLI session file for the given work directory + session UUID.
+// Returns true if a file was actually removed, false otherwise.
+func deleteSessionFile(workDir string, sessionID uuid.UUID) bool {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	resolved, err := filepath.EvalSymlinks(workDir)
+	if err != nil {
+		resolved = workDir
+	}
+	encoded := strings.NewReplacer(string(filepath.Separator), "-", "_", "-", ".", "-", ":", "-").Replace(resolved)
+	sessionFile := filepath.Join(home, ".claude", "projects", encoded, sessionID.String()+".jsonl")
+	if err := os.Remove(sessionFile); err != nil {
+		return false
+	}
+	slog.Info("claude-cli: deleted stuck session file", "path", sessionFile)
+	return true
+}
+
 // buildStreamJSONInput creates stream-json stdin for vision (images + text).
 func buildStreamJSONInput(text string, images []ImageContent) *bytes.Reader {
 	var contentBlocks []map[string]any

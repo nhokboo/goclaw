@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -16,6 +17,23 @@ import (
 
 // Chat runs the CLI synchronously and returns the final response.
 func (p *ClaudeCLIProvider) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
+	resp, err := p.chatOnce(ctx, req)
+	if err != nil && errors.Is(err, errNoResult) {
+		// Session may be stuck in a tool loop. Delete the session file and retry once
+		// with a fresh session so the user isn't permanently blocked.
+		sessionKey := extractStringOpt(req.Options, OptSessionKey)
+		workDir := p.ensureWorkDir(sessionKey)
+		cliSessionID := deriveSessionUUID(sessionKey)
+		if deleteSessionFile(workDir, cliSessionID) {
+			slog.Warn("claude-cli: retrying with fresh session after stuck tool loop", "session_key", sessionKey)
+			return p.chatOnce(ctx, req)
+		}
+	}
+	return resp, err
+}
+
+// chatOnce executes a single CLI invocation.
+func (p *ClaudeCLIProvider) chatOnce(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
 	systemPrompt, userMsg, images := extractFromMessages(req.Messages)
 	sessionKey := extractStringOpt(req.Options, OptSessionKey)
 	model := req.Model
@@ -68,6 +86,21 @@ func (p *ClaudeCLIProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRes
 
 // ChatStream runs the CLI with stream-json output, calling onChunk for each text delta.
 func (p *ClaudeCLIProvider) ChatStream(ctx context.Context, req ChatRequest, onChunk func(StreamChunk)) (*ChatResponse, error) {
+	resp, err := p.chatStreamOnce(ctx, req, onChunk)
+	if err != nil && strings.Contains(err.Error(), "stream completed without content") {
+		sessionKey := extractStringOpt(req.Options, OptSessionKey)
+		workDir := p.ensureWorkDir(sessionKey)
+		cliSessionID := deriveSessionUUID(sessionKey)
+		if deleteSessionFile(workDir, cliSessionID) {
+			slog.Warn("claude-cli: retrying stream with fresh session after stuck tool loop", "session_key", sessionKey)
+			return p.chatStreamOnce(ctx, req, onChunk)
+		}
+	}
+	return resp, err
+}
+
+// chatStreamOnce executes a single streaming CLI invocation.
+func (p *ClaudeCLIProvider) chatStreamOnce(ctx context.Context, req ChatRequest, onChunk func(StreamChunk)) (*ChatResponse, error) {
 	systemPrompt, userMsg, images := extractFromMessages(req.Messages)
 	sessionKey := extractStringOpt(req.Options, OptSessionKey)
 	model := req.Model

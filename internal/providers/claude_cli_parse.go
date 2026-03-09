@@ -3,9 +3,15 @@ package providers
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 )
+
+// errNoResult is returned when CLI output contains JSON events but no extractable text.
+// Callers can check this to trigger session reset + retry.
+var errNoResult = errors.New("claude-cli: no result in JSON output")
 
 // parseJSONResponse parses the CLI JSON output into a ChatResponse.
 func parseJSONResponse(data []byte) (*ChatResponse, error) {
@@ -34,7 +40,13 @@ func parseJSONResponse(data []byte) (*ChatResponse, error) {
 		return nil, fmt.Errorf("claude-cli: empty response")
 	}
 	if len(trimmed) > 0 && (trimmed[0] == '[' || trimmed[0] == '{') {
-		return nil, fmt.Errorf("claude-cli: no result in JSON output (got %d bytes of internal events)", len(trimmed))
+		// Log a snippet of the output to help debug session/format issues.
+		snippet := trimmed
+		if len(snippet) > 512 {
+			snippet = snippet[:512] + "..."
+		}
+		slog.Warn("claude-cli: unparseable JSON output", "bytes", len(trimmed), "snippet", snippet)
+		return nil, fmt.Errorf("%w (got %d bytes of internal events)", errNoResult, len(trimmed))
 	}
 	return &ChatResponse{
 		Content:      trimmed,
@@ -75,6 +87,14 @@ func parseJSONArray(data []byte) *ChatResponse {
 		switch ev.Type {
 		case "result":
 			resultText = ev.Result
+			// Newer CLI versions may embed content in Message blocks on result events.
+			if resultText == "" && ev.Message != nil {
+				var msg cliStreamMsg
+				if err := json.Unmarshal(ev.Message, &msg); err == nil {
+					text, _ := extractStreamContent(&msg)
+					resultText = text
+				}
+			}
 			if ev.Subtype == "error" {
 				finishReason = "error"
 			}
@@ -126,8 +146,19 @@ func parseSingleJSONResult(line []byte) *ChatResponse {
 	if resp.Type != "result" {
 		return nil
 	}
+
+	content := resp.Result
+	// Newer CLI versions may put content in Message blocks instead of Result string.
+	if content == "" && resp.Message != nil {
+		text, _ := extractStreamContent(resp.Message)
+		content = text
+	}
+	if content == "" {
+		return nil
+	}
+
 	cr := &ChatResponse{
-		Content:      resp.Result,
+		Content:      content,
 		FinishReason: "stop",
 	}
 	if resp.Subtype == "error" {
