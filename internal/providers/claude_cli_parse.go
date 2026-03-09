@@ -25,10 +25,16 @@ func parseJSONResponse(data []byte) (*ChatResponse, error) {
 		}
 	}
 
-	// Last resort: treat entire output as text response
+	// Last resort: treat entire output as text response.
+	// Guard against raw JSON leaking to users — if the output looks like
+	// a JSON array or object (CLI events without a result), return an error
+	// instead of forwarding internal protocol data as chat content.
 	trimmed := strings.TrimSpace(string(data))
 	if trimmed == "" {
 		return nil, fmt.Errorf("claude-cli: empty response")
+	}
+	if len(trimmed) > 0 && (trimmed[0] == '[' || trimmed[0] == '{') {
+		return nil, fmt.Errorf("claude-cli: no result in JSON output (got %d bytes of internal events)", len(trimmed))
 	}
 	return &ChatResponse{
 		Content:      trimmed,

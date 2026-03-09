@@ -34,19 +34,19 @@ type telegramInstanceConfig struct {
 // Factory creates a Telegram channel from DB instance data (no extra stores).
 func Factory(name string, creds json.RawMessage, cfg json.RawMessage,
 	msgBus *bus.MessageBus, pairingSvc store.PairingStore) (channels.Channel, error) {
-	return buildChannel(name, creds, cfg, msgBus, pairingSvc, nil, nil, nil)
+	return buildChannel(name, creds, cfg, msgBus, pairingSvc, nil, nil, nil, nil)
 }
 
-// FactoryWithStores returns a ChannelFactory that includes agent, team, and pending message stores.
-func FactoryWithStores(agentStore store.AgentStore, teamStore store.TeamStore, pendingStore store.PendingMessageStore) channels.ChannelFactory {
+// FactoryWithStores returns a ChannelFactory that includes agent, team, pending message, and migration stores.
+func FactoryWithStores(agentStore store.AgentStore, teamStore store.TeamStore, pendingStore store.PendingMessageStore, chatMigration store.ChatMigrationStore) channels.ChannelFactory {
 	return func(name string, creds json.RawMessage, cfg json.RawMessage,
 		msgBus *bus.MessageBus, pairingSvc store.PairingStore) (channels.Channel, error) {
-		return buildChannel(name, creds, cfg, msgBus, pairingSvc, agentStore, teamStore, pendingStore)
+		return buildChannel(name, creds, cfg, msgBus, pairingSvc, agentStore, teamStore, pendingStore, chatMigration)
 	}
 }
 
 func buildChannel(name string, creds json.RawMessage, cfg json.RawMessage,
-	msgBus *bus.MessageBus, pairingSvc store.PairingStore, agentStore store.AgentStore, teamStore store.TeamStore, pendingStore store.PendingMessageStore) (channels.Channel, error) {
+	msgBus *bus.MessageBus, pairingSvc store.PairingStore, agentStore store.AgentStore, teamStore store.TeamStore, pendingStore store.PendingMessageStore, chatMigration store.ChatMigrationStore) (channels.Channel, error) {
 
 	var c telegramCreds
 	if len(creds) > 0 {
@@ -91,6 +91,9 @@ func buildChannel(name string, creds json.RawMessage, cfg json.RawMessage,
 	ch, err := New(tgCfg, msgBus, pairingSvc, agentStore, teamStore, pendingStore)
 	if err != nil {
 		return nil, err
+	}
+	if chatMigration != nil {
+		ch.SetChatMigration(chatMigration)
 	}
 
 	// Override the channel name from DB instance.

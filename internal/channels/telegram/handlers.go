@@ -22,6 +22,15 @@ func (c *Channel) handleMessage(ctx context.Context, update telego.Update) {
 		return
 	}
 
+	// Handle group → supergroup migration before skipping service messages.
+	// When Telegram converts a group to a supergroup, it sends a message with
+	// MigrateToChatID set to the new supergroup chat ID. All stored references
+	// (sessions, cron, memory, writers, etc.) must be updated atomically.
+	if message.MigrateToChatID != 0 {
+		c.handleGroupMigration(ctx, message.Chat.ID, message.MigrateToChatID)
+		return
+	}
+
 	// Skip service messages (member added/removed, title changed, etc.).
 	// These have no text/caption and no meaningful media — processing them
 	// pollutes mention gate and history with "[empty message]" entries.

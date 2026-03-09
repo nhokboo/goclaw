@@ -33,6 +33,9 @@ func registerConfigChannels(cfg *config.Config, channelMgr *channels.Manager, ms
 		if err != nil {
 			slog.Error("failed to initialize telegram channel", "error", err)
 		} else {
+			if pgStores.ChatMigration != nil {
+				tg.SetChatMigration(pgStores.ChatMigration)
+			}
 			channelMgr.RegisterChannel(channels.TypeTelegram, tg)
 			slog.Info("telegram channel enabled (config)")
 		}

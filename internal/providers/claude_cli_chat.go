@@ -218,6 +218,12 @@ func (p *ClaudeCLIProvider) ChatStream(ctx context.Context, req ChatRequest, onC
 		finalResp.FinishReason = "stop"
 	}
 
+	// Guard: if CLI produced no usable content (e.g. only system init events),
+	// return error instead of empty/broken response.
+	if finalResp.Content == "" {
+		return nil, fmt.Errorf("claude-cli: stream completed without content (stderr: %s)", stderrBuf.String())
+	}
+
 	onChunk(StreamChunk{Done: true})
 	return &finalResp, nil
 }

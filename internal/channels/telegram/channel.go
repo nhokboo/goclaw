@@ -24,8 +24,9 @@ type Channel struct {
 	bot              *telego.Bot
 	config           config.TelegramConfig
 	pairingService   store.PairingStore
-	agentStore       store.AgentStore // for group file writer management (nil if not configured)
-	teamStore        store.TeamStore  // for /tasks, /task_detail commands (nil if not configured)
+	agentStore       store.AgentStore         // for group file writer management (nil if not configured)
+	teamStore        store.TeamStore          // for /tasks, /task_detail commands (nil if not configured)
+	chatMigration    store.ChatMigrationStore // for group → supergroup chat ID migration (nil if not configured)
 	placeholders     sync.Map         // localKey string → messageID int
 	stopThinking     sync.Map         // localKey string → *thinkingCancel
 	typingCtrls      sync.Map         // localKey string → *typing.Controller
@@ -101,6 +102,9 @@ func New(cfg config.TelegramConfig, msgBus *bus.MessageBus, pairingSvc store.Pai
 	}, nil
 }
 
+// SetChatMigration sets the store used for group → supergroup chat ID migration.
+func (c *Channel) SetChatMigration(s store.ChatMigrationStore) { c.chatMigration = s }
+
 // Start begins long polling for Telegram updates.
 func (c *Channel) Start(ctx context.Context) error {
 	slog.Info("starting telegram bot (polling mode)")
@@ -164,6 +168,8 @@ func (c *Channel) Start(ctx context.Context) error {
 					c.handleMessage(pollCtx, update)
 				} else if update.CallbackQuery != nil {
 					c.handleCallbackQuery(pollCtx, update.CallbackQuery)
+				} else if update.MyChatMember != nil {
+					c.handleMyChatMember(update.MyChatMember)
 				} else {
 					// Log non-message updates for delivery diagnostics
 					updateType := "unknown"
@@ -172,8 +178,6 @@ func (c *Channel) Start(ctx context.Context) error {
 						updateType = "edited_message"
 					case update.ChannelPost != nil:
 						updateType = "channel_post"
-					case update.MyChatMember != nil:
-						updateType = "my_chat_member"
 					case update.ChatMember != nil:
 						updateType = "chat_member"
 					}
