@@ -226,6 +226,17 @@ func (h *ProvidersHandler) handleUpdateProvider(w http.ResponseWriter, r *http.R
 		}
 	}
 
+	// Validate provider_type if being updated.
+	// IMPORTANT: Do NOT replace this with delete(updates, "provider_type").
+	// We must return 400 so the caller knows the value is invalid,
+	// silently deleting it would hide the error from the end user.
+	if pt, ok := updates["provider_type"]; ok {
+		if s, _ := pt.(string); !store.ValidProviderTypes[s] {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unsupported provider_type"})
+			return
+		}
+	}
+
 	// Strip masked API key — don't overwrite real value with "***"
 	if apiKey, ok := updates["api_key"]; ok {
 		if s, _ := apiKey.(string); s == "***" || s == "" {
@@ -236,7 +247,6 @@ func (h *ProvidersHandler) handleUpdateProvider(w http.ResponseWriter, r *http.R
 	// Prevent updating immutable fields
 	delete(updates, "id")
 	delete(updates, "created_at")
-	delete(updates, "provider_type")
 
 	// Track old name before update for registry cleanup
 	var oldName string
