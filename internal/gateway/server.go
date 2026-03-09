@@ -46,6 +46,8 @@ type Server struct {
 	providersHandler        *httpapi.ProvidersHandler        // provider CRUD API
 	delegationsHandler      *httpapi.DelegationsHandler      // delegation history API
 	builtinToolsHandler     *httpapi.BuiltinToolsHandler     // builtin tool management API
+	pendingMessagesHandler  *httpapi.PendingMessagesHandler  // pending messages API
+	memoryHandler           *httpapi.MemoryHandler           // memory management API
 	oauthHandler            *httpapi.OAuthHandler            // OAuth endpoints
 	filesHandler            *httpapi.FilesHandler            // workspace file serving
 	storageHandler          *httpapi.StorageHandler          // storage file management
@@ -200,6 +202,16 @@ func (s *Server) BuildMux() *http.ServeMux {
 	// Managed mode: builtin tool management API
 	if s.builtinToolsHandler != nil {
 		s.builtinToolsHandler.RegisterRoutes(mux)
+	}
+
+	// Managed mode: pending messages API
+	if s.pendingMessagesHandler != nil {
+		s.pendingMessagesHandler.RegisterRoutes(mux)
+	}
+
+	// Memory management API
+	if s.memoryHandler != nil {
+		s.memoryHandler.RegisterRoutes(mux)
 	}
 
 	// Workspace file serving (available in all modes)
@@ -409,6 +421,11 @@ func (s *Server) SetProvidersHandler(h *httpapi.ProvidersHandler) { s.providersH
 // SetDelegationsHandler sets the delegation history handler.
 func (s *Server) SetDelegationsHandler(h *httpapi.DelegationsHandler) { s.delegationsHandler = h }
 
+// SetPendingMessagesHandler sets the pending messages handler.
+func (s *Server) SetPendingMessagesHandler(h *httpapi.PendingMessagesHandler) {
+	s.pendingMessagesHandler = h
+}
+
 // SetBuiltinToolsHandler sets the builtin tool management handler.
 func (s *Server) SetBuiltinToolsHandler(h *httpapi.BuiltinToolsHandler) {
 	s.builtinToolsHandler = h
@@ -428,6 +445,9 @@ func (s *Server) SetMediaUploadHandler(h *httpapi.MediaUploadHandler) { s.mediaU
 
 // SetMediaServeHandler sets the media serve handler.
 func (s *Server) SetMediaServeHandler(h *httpapi.MediaServeHandler) { s.mediaServeHandler = h }
+
+// SetMemoryHandler sets the memory management handler.
+func (s *Server) SetMemoryHandler(h *httpapi.MemoryHandler) { s.memoryHandler = h }
 
 // SetAgentStore sets the agent store for context injection in tools_invoke.
 func (s *Server) SetAgentStore(as store.AgentStore) { s.agentStore = as }

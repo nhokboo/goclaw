@@ -30,6 +30,8 @@ export const ROUTES = {
   MCP: "/mcp",
   TTS: "/tts",
   STORAGE: "/storage",
+  PENDING_MESSAGES: "/pending-messages",
+  MEMORY: "/memory",
   SETUP: "/setup",
 } as const;
 
