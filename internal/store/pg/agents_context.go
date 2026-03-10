@@ -98,7 +98,9 @@ func (s *PGAgentStore) GetOrCreateUserProfile(ctx context.Context, agentID uuid.
 	err := s.db.QueryRowContext(ctx, `
 		INSERT INTO user_agent_profiles (agent_id, user_id, workspace, first_seen_at, last_seen_at)
 		VALUES ($1, $2, NULLIF($3, ''), NOW(), NOW())
-		ON CONFLICT (agent_id, user_id) DO UPDATE SET last_seen_at = NOW()
+		ON CONFLICT (agent_id, user_id) DO UPDATE SET
+			last_seen_at = NOW(),
+			workspace = COALESCE(NULLIF($3, ''), user_agent_profiles.workspace)
 		RETURNING (xmax = 0), workspace
 	`, agentID, userID, effectiveWs).Scan(&isInserted, &storedWorkspace)
 	if err != nil {
