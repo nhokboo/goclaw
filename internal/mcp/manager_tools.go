@@ -71,8 +71,8 @@ func (m *Manager) unregisterAllTools() {
 			if ss.cancel != nil {
 				ss.cancel()
 			}
-			if ss.client != nil {
-				_ = ss.client.Close()
+			if c := ss.client(); c != nil {
+				_ = c.Close()
 			}
 			for _, toolName := range ss.toolNames {
 				m.registry.Unregister(toolName)
@@ -106,28 +106,15 @@ type ToolInfo struct {
 
 // DiscoverTools connects temporarily to an MCP server, lists its tools, and disconnects.
 // Used for on-demand discovery when no persistent Manager connection exists (DB-backed servers).
-func DiscoverTools(ctx context.Context, transportType, command string, args []string, env map[string]string, url string, headers map[string]string) ([]ToolInfo, error) {
+func DiscoverTools(ctx context.Context, cp ConnParams) ([]ToolInfo, error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
-	client, err := createClient(transportType, command, args, env, url, headers)
+	client, err := dialAndInit(ctx, cp)
 	if err != nil {
-		return nil, fmt.Errorf("create client: %w", err)
+		return nil, err
 	}
 	defer client.Close()
-
-	if transportType != "stdio" {
-		if err := client.Start(ctx); err != nil {
-			return nil, fmt.Errorf("start transport: %w", err)
-		}
-	}
-
-	initReq := mcpgo.InitializeRequest{}
-	initReq.Params.ProtocolVersion = mcpgo.LATEST_PROTOCOL_VERSION
-	initReq.Params.ClientInfo = mcpgo.Implementation{Name: "goclaw-discovery", Version: "1.0.0"}
-	if _, err := client.Initialize(ctx, initReq); err != nil {
-		return nil, fmt.Errorf("initialize: %w", err)
-	}
 
 	toolsResult, err := client.ListTools(ctx, mcpgo.ListToolsRequest{})
 	if err != nil {

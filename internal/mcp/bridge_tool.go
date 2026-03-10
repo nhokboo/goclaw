@@ -7,28 +7,29 @@ import (
 	"sync/atomic"
 	"time"
 
-	mcpclient "github.com/mark3labs/mcp-go/client"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/nextlevelbuilder/goclaw/internal/tools"
 )
 
 // BridgeTool adapts an MCP tool into the tools.Tool interface.
-// It delegates Execute calls to the MCP server via the client.
+// It delegates Execute calls to the MCP server via the client holder,
+// which is swappable so reconnection works transparently.
 type BridgeTool struct {
 	serverName     string
 	toolName       string // original MCP tool name
 	registeredName string // may include prefix: "{prefix}__{toolName}"
 	description    string
 	inputSchema    map[string]any // JSON Schema for parameters
-	client         *mcpclient.Client
+	holder         *clientHolder
 	timeoutSec     int
 	connected      *atomic.Bool
+	dead           *atomic.Bool // permanently failed after max reconnect attempts
 }
 
 // NewBridgeTool creates a BridgeTool from an MCP Tool definition.
 // The tool name is always prefixed with "mcp_" to distinguish MCP tools from native tools.
 // If prefix is empty, it is auto-derived from the server name.
-func NewBridgeTool(serverName string, mcpTool mcpgo.Tool, client *mcpclient.Client, prefix string, timeoutSec int, connected *atomic.Bool) *BridgeTool {
+func NewBridgeTool(serverName string, mcpTool mcpgo.Tool, holder *clientHolder, prefix string, timeoutSec int, connected, dead *atomic.Bool) *BridgeTool {
 	name := mcpTool.Name
 	effectivePrefix := ensureMCPPrefix(prefix, serverName)
 	registered := effectivePrefix + "__" + name
@@ -45,9 +46,10 @@ func NewBridgeTool(serverName string, mcpTool mcpgo.Tool, client *mcpclient.Clie
 		registeredName: registered,
 		description:    mcpTool.Description,
 		inputSchema:    schema,
-		client:         client,
+		holder:         holder,
 		timeoutSec:     timeoutSec,
 		connected:      connected,
+		dead:           dead,
 	}
 }
 
@@ -83,9 +85,23 @@ func (t *BridgeTool) ServerName() string { return t.serverName }
 // OriginalName returns the original MCP tool name (without prefix).
 func (t *BridgeTool) OriginalName() string { return t.toolName }
 
+// reconnectGracePeriod is how long Execute waits for an in-progress reconnect
+// before returning an error. Keeps the LLM from seeing transient disconnects.
+const reconnectGracePeriod = 15 * time.Second
+
 func (t *BridgeTool) Execute(ctx context.Context, args map[string]any) *tools.Result {
 	if !t.connected.Load() {
-		return tools.ErrorResult(fmt.Sprintf("MCP server %q is disconnected", t.serverName))
+		if t.dead.Load() {
+			return tools.ErrorResult(fmt.Sprintf("MCP server %q is permanently unavailable (reconnection failed). Do not retry — proceed without this tool.", t.serverName))
+		}
+		// Wait briefly for reconnect to complete — avoids exposing transient
+		// disconnects to the LLM which would cause it to give up on the tool.
+		if !t.waitForReconnect(ctx, reconnectGracePeriod) {
+			if t.dead.Load() {
+				return tools.ErrorResult(fmt.Sprintf("MCP server %q is permanently unavailable (reconnection failed). Do not retry — proceed without this tool.", t.serverName))
+			}
+			return tools.ErrorResult(fmt.Sprintf("MCP server %q is temporarily disconnected (reconnecting). Try again shortly or proceed without this tool.", t.serverName))
+		}
 	}
 
 	callCtx, cancel := context.WithTimeout(ctx, time.Duration(t.timeoutSec)*time.Second)
@@ -95,7 +111,7 @@ func (t *BridgeTool) Execute(ctx context.Context, args map[string]any) *tools.Re
 	req.Params.Name = t.toolName
 	req.Params.Arguments = args
 
-	result, err := t.client.CallTool(callCtx, req)
+	result, err := t.holder.Get().CallTool(callCtx, req)
 	if err != nil {
 		if callCtx.Err() == context.DeadlineExceeded {
 			return tools.ErrorResult(fmt.Sprintf("MCP tool %q timeout after %ds", t.registeredName, t.timeoutSec))
@@ -110,6 +126,31 @@ func (t *BridgeTool) Execute(ctx context.Context, args map[string]any) *tools.Re
 	}
 
 	return tools.NewResult(text)
+}
+
+// waitForReconnect polls connected/dead flags until the server reconnects,
+// the deadline expires, or the server is marked permanently dead.
+// Returns true if the connection was restored.
+func (t *BridgeTool) waitForReconnect(ctx context.Context, timeout time.Duration) bool {
+	deadline := time.After(timeout)
+	ticker := time.NewTicker(reconnectPollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-deadline:
+			return false
+		case <-ticker.C:
+			if t.connected.Load() {
+				return true
+			}
+			if t.dead.Load() {
+				return false
+			}
+		}
+	}
 }
 
 // inputSchemaToMap converts mcp.ToolInputSchema to the map format expected by tools.Tool.Parameters().

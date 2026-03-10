@@ -32,7 +32,14 @@ func (h *MCPHandler) handleTestConnection(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	tools, err := mcpbridge.DiscoverTools(r.Context(), req.Transport, req.Command, req.Args, req.Env, req.URL, req.Headers)
+	tools, err := mcpbridge.DiscoverTools(r.Context(), mcpbridge.ConnParams{
+		Transport: req.Transport,
+		Command:   req.Command,
+		Args:      req.Args,
+		Env:       req.Env,
+		URL:       req.URL,
+		Headers:   req.Headers,
+	})
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"success": false,
@@ -81,7 +88,14 @@ func (h *MCPHandler) handleListServerTools(w http.ResponseWriter, r *http.Reques
 		_ = json.Unmarshal(srv.Env, &env)
 		_ = json.Unmarshal(srv.Headers, &headers)
 
-		discovered, err := mcpbridge.DiscoverTools(r.Context(), srv.Transport, srv.Command, args, env, srv.URL, headers)
+		discovered, err := mcpbridge.DiscoverTools(r.Context(), mcpbridge.ConnParams{
+			Transport: srv.Transport,
+			Command:   srv.Command,
+			Args:      args,
+			Env:       env,
+			URL:       srv.URL,
+			Headers:   headers,
+		})
 		if err != nil {
 			slog.Warn("mcp.discover_tools", "server", srv.Name, "error", err)
 		} else {

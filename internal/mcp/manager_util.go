@@ -35,6 +35,30 @@ func joinErrors(errs []string) string {
 	return result.String()
 }
 
+// sanitizeConnError strips internal details (hostnames, ports, paths) from
+// connection errors before exposing them via the API. Returns a generic
+// category so operators know *what* failed without leaking infrastructure.
+func sanitizeConnError(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	low := strings.ToLower(raw)
+	switch {
+	case strings.Contains(low, "timeout") || strings.Contains(low, "deadline"):
+		return "connection timeout"
+	case strings.Contains(low, "refused"):
+		return "connection refused"
+	case strings.Contains(low, "session") && strings.Contains(low, "expired"):
+		return "session expired"
+	case strings.Contains(low, "max reconnect"):
+		return raw // already a safe, controlled message
+	case strings.Contains(low, "eof") || strings.Contains(low, "broken pipe"):
+		return "connection lost"
+	default:
+		return "connection error"
+	}
+}
+
 // jsonBytesToStringSlice converts JSONB []byte to []string. Returns nil on error.
 func jsonBytesToStringSlice(data []byte) []string {
 	if len(data) == 0 {

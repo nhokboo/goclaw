@@ -21,6 +21,7 @@ const (
 	initialBackoff       = 2 * time.Second
 	maxBackoff           = 60 * time.Second
 	maxReconnectAttempts = 10
+	deadPollInterval     = 10 * time.Minute // slow-poll after reconnect exhausted
 
 	// mcpToolInlineMaxCount is the threshold above which MCP tools switch
 	// to search mode (deferred loading via mcp_tool_search) instead of
@@ -37,19 +38,58 @@ type ServerStatus struct {
 	Error     string `json:"error,omitempty"`
 }
 
+// clientHolder provides a swappable client reference so that BridgeTools
+// automatically use a new client after reconnection without re-registration.
+type clientHolder struct {
+	mu     sync.RWMutex
+	client *mcpclient.Client
+}
+
+func (h *clientHolder) Get() *mcpclient.Client {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.client
+}
+
+func (h *clientHolder) Swap(newClient *mcpclient.Client) (old *mcpclient.Client) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	old = h.client
+	h.client = newClient
+	return old
+}
+
+// ConnParams holds the parameters needed to (re)connect to an MCP server.
+type ConnParams struct {
+	Transport string
+	Command   string
+	Args      []string
+	Env       map[string]string
+	URL       string
+	Headers   map[string]string
+}
+
 // serverState tracks a single MCP server connection.
 type serverState struct {
-	name       string
-	transport  string
-	client     *mcpclient.Client
+	name   string
+	params ConnParams
+	holder *clientHolder
+
 	connected  atomic.Bool
 	toolNames  []string // registered tool names in the registry
 	timeoutSec int
 	cancel     context.CancelFunc
 
-	mu              sync.Mutex
-	reconnAttempts  int
-	lastErr         string
+	dead atomic.Bool // permanently failed — healthLoop should stop
+
+	mu             sync.Mutex
+	reconnAttempts int
+	lastErr        string
+}
+
+// client returns the current MCP client (shorthand for holder.Get).
+func (ss *serverState) client() *mcpclient.Client {
+	return ss.holder.Get()
 }
 
 // Manager orchestrates MCP server connections and tool registration.
@@ -134,7 +174,15 @@ func (m *Manager) Start(ctx context.Context) error {
 			continue
 		}
 
-		if err := m.connectServer(ctx, name, cfg.Transport, cfg.Command, cfg.Args, cfg.Env, cfg.URL, cfg.Headers, cfg.ToolPrefix, cfg.TimeoutSec); err != nil {
+		cp := ConnParams{
+			Transport: cfg.Transport,
+			Command:   cfg.Command,
+			Args:      cfg.Args,
+			Env:       cfg.Env,
+			URL:       cfg.URL,
+			Headers:   cfg.Headers,
+		}
+		if err := m.connectServer(ctx, name, cp, cfg.ToolPrefix, cfg.TimeoutSec); err != nil {
 			slog.Warn("mcp.server.connect_failed", "server", name, "error", err)
 			errs = append(errs, fmt.Sprintf("%s: %v", name, err))
 		}
@@ -167,22 +215,24 @@ func (m *Manager) LoadForAgent(ctx context.Context, agentID uuid.UUID, userID st
 			continue
 		}
 
-		args := jsonBytesToStringSlice(srv.Args)
-		env := jsonBytesToStringMap(srv.Env)
-		headers := jsonBytesToStringMap(srv.Headers)
+		cp := ConnParams{
+			Transport: srv.Transport,
+			Command:   srv.Command,
+			Args:      jsonBytesToStringSlice(srv.Args),
+			Env:       jsonBytesToStringMap(srv.Env),
+			URL:       srv.URL,
+			Headers:   jsonBytesToStringMap(srv.Headers),
+		}
 
 		if m.pool != nil {
 			// Pool mode: acquire shared connection, create per-agent BridgeTools
-			if err := m.connectViaPool(ctx, srv.Name, srv.Transport, srv.Command,
-				args, env, srv.URL, headers, srv.ToolPrefix, srv.TimeoutSec); err != nil {
+			if err := m.connectViaPool(ctx, srv.Name, cp, srv.ToolPrefix, srv.TimeoutSec); err != nil {
 				slog.Warn("mcp.server.connect_failed", "server", srv.Name, "error", err)
 				continue
 			}
 		} else {
 			// Standalone mode: create per-agent connection
-			if err := m.connectServer(ctx, srv.Name, srv.Transport, srv.Command,
-				args, env, srv.URL, headers,
-				srv.ToolPrefix, srv.TimeoutSec); err != nil {
+			if err := m.connectServer(ctx, srv.Name, cp, srv.ToolPrefix, srv.TimeoutSec); err != nil {
 				slog.Warn("mcp.server.connect_failed", "server", srv.Name, "error", err)
 				continue
 			}
@@ -334,8 +384,8 @@ func (m *Manager) Stop() {
 			if ss.cancel != nil {
 				ss.cancel()
 			}
-			if ss.client != nil {
-				if err := ss.client.Close(); err != nil {
+			if c := ss.client(); c != nil {
+				if err := c.Close(); err != nil {
 					slog.Debug("mcp.server.close_error", "server", name, "error", err)
 				}
 			}
@@ -356,12 +406,15 @@ func (m *Manager) ServerStatus() []ServerStatus {
 
 	statuses := make([]ServerStatus, 0, len(m.servers))
 	for _, ss := range m.servers {
+		ss.mu.Lock()
+		errMsg := sanitizeConnError(ss.lastErr)
+		ss.mu.Unlock()
 		statuses = append(statuses, ServerStatus{
 			Name:      ss.name,
-			Transport: ss.transport,
+			Transport: ss.params.Transport,
 			Connected: ss.connected.Load(),
 			ToolCount: len(ss.toolNames),
-			Error:     ss.lastErr,
+			Error:     errMsg,
 		})
 	}
 	return statuses

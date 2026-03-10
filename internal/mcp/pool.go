@@ -2,8 +2,10 @@ package mcp
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 )
@@ -34,7 +36,7 @@ func NewPool() *Pool {
 // Acquire returns a shared connection for the named server.
 // If no connection exists, it connects using the provided config.
 // Increments the reference count.
-func (p *Pool) Acquire(ctx context.Context, name, transportType, command string, args []string, env map[string]string, url string, headers map[string]string, timeoutSec int) (*poolEntry, error) {
+func (p *Pool) Acquire(ctx context.Context, name string, cp ConnParams, timeoutSec int) (*poolEntry, error) {
 	p.mu.Lock()
 
 	if entry, ok := p.servers[name]; ok && entry.state.connected.Load() {
@@ -49,8 +51,8 @@ func (p *Pool) Acquire(ctx context.Context, name, transportType, command string,
 		if old.state.cancel != nil {
 			old.state.cancel()
 		}
-		if old.state.client != nil {
-			_ = old.state.client.Close()
+		if c := old.state.client(); c != nil {
+			_ = c.Close()
 		}
 		delete(p.servers, name)
 	}
@@ -58,12 +60,12 @@ func (p *Pool) Acquire(ctx context.Context, name, transportType, command string,
 	p.mu.Unlock()
 
 	// Connect outside the lock (may be slow)
-	ss, mcpTools, err := connectAndDiscover(ctx, name, transportType, command, args, env, url, headers, timeoutSec)
+	ss, mcpTools, err := connectAndDiscover(ctx, name, cp, timeoutSec)
 	if err != nil {
 		return nil, err
 	}
 
-	// Start health loop
+	// Start health loop with reconnection support
 	hctx, hcancel := context.WithCancel(context.Background())
 	ss.cancel = hcancel
 	go poolHealthLoop(hctx, ss)
@@ -77,13 +79,11 @@ func (p *Pool) Acquire(ctx context.Context, name, transportType, command string,
 	p.mu.Lock()
 	// Check if another goroutine connected while we were connecting
 	if existing, ok := p.servers[name]; ok && existing.state.connected.Load() {
-		// Use existing, close ours
-		p.mu.Unlock()
-		hcancel()
-		_ = ss.client.Close()
-		p.mu.Lock()
 		existing.refCount++
 		p.mu.Unlock()
+		// Clean up our unused connection outside the lock
+		hcancel()
+		_ = ss.client().Close()
 		return existing, nil
 	}
 	p.servers[name] = entry
@@ -118,17 +118,16 @@ func (p *Pool) Stop() {
 		if entry.state.cancel != nil {
 			entry.state.cancel()
 		}
-		if entry.state.client != nil {
-			_ = entry.state.client.Close()
+		if c := entry.state.client(); c != nil {
+			_ = c.Close()
 		}
 		slog.Debug("mcp.pool.stopped", "server", name)
 	}
 	p.servers = make(map[string]*poolEntry)
 }
 
-// poolHealthLoop is a standalone health loop for pool-managed connections.
-// Unlike Manager.healthLoop, it doesn't trigger reconnection via Manager
-// since the pool owns the connection lifecycle.
+// poolHealthLoop monitors a pool-managed connection and attempts reconnection
+// on failure, mirroring the Manager's healthLoop/tryReconnect/deadPoll pattern.
 func poolHealthLoop(ctx context.Context, ss *serverState) {
 	ticker := newHealthTicker()
 	defer ticker.Stop()
@@ -138,16 +137,34 @@ func poolHealthLoop(ctx context.Context, ss *serverState) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := ss.client.Ping(ctx); err != nil {
+			if err := ss.client().Ping(ctx); err != nil {
 				if isMethodNotFound(err) {
 					ss.connected.Store(true)
+					ss.mu.Lock()
+					ss.reconnAttempts = 0
+					ss.lastErr = ""
+					ss.mu.Unlock()
 					continue
 				}
 				ss.connected.Store(false)
 				ss.mu.Lock()
 				ss.lastErr = err.Error()
 				ss.mu.Unlock()
+
+				if ss.dead.Load() {
+					slog.Info("mcp.pool.dead_poll_start", "server", ss.name, "interval", deadPollInterval)
+					ticker.Stop()
+					poolDeadPoll(ctx, ss)
+					if !ss.connected.Load() {
+						return
+					}
+					ticker.Reset(healthCheckInterval)
+					slog.Info("mcp.pool.revived", "server", ss.name)
+					continue
+				}
+
 				slog.Warn("mcp.pool.health_failed", "server", ss.name, "error", err)
+				poolTryReconnect(ctx, ss)
 			} else {
 				ss.connected.Store(true)
 				ss.mu.Lock()
@@ -155,6 +172,77 @@ func poolHealthLoop(ctx context.Context, ss *serverState) {
 				ss.lastErr = ""
 				ss.mu.Unlock()
 			}
+		}
+	}
+}
+
+// poolTryReconnect attempts to reconnect a pool-managed server with exponential backoff.
+func poolTryReconnect(ctx context.Context, ss *serverState) {
+	ss.mu.Lock()
+	if ss.reconnAttempts >= maxReconnectAttempts {
+		ss.lastErr = fmt.Sprintf("max reconnect attempts (%d) reached", maxReconnectAttempts)
+		ss.mu.Unlock()
+		ss.dead.Store(true)
+		slog.Error("mcp.pool.reconnect_exhausted", "server", ss.name)
+		return
+	}
+	ss.reconnAttempts++
+	attempt := ss.reconnAttempts
+	ss.mu.Unlock()
+
+	backoff := min(initialBackoff*time.Duration(1<<(attempt-1)), maxBackoff)
+
+	slog.Info("mcp.pool.reconnecting", "server", ss.name, "attempt", attempt, "backoff", backoff)
+
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(backoff):
+	}
+
+	// Try ping first
+	if err := ss.client().Ping(ctx); err == nil {
+		ss.connected.Store(true)
+		ss.mu.Lock()
+		ss.reconnAttempts = 0
+		ss.lastErr = ""
+		ss.mu.Unlock()
+		slog.Info("mcp.pool.reconnected", "server", ss.name)
+		return
+	}
+
+	newClient, err := dialAndInit(ctx, ss.params)
+	if err != nil {
+		slog.Warn("mcp.pool.reconnect_failed", "server", ss.name, "error", err)
+		return
+	}
+
+	ss.swapAndRestore(newClient)
+	slog.Info("mcp.pool.reconnected", "server", ss.name, "method", "new_client")
+}
+
+// poolDeadPoll periodically attempts a full reconnect for a pool-managed server
+// after all fast retries are exhausted.
+func poolDeadPoll(ctx context.Context, ss *serverState) {
+	ticker := time.NewTicker(deadPollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			slog.Debug("mcp.pool.dead_poll_attempt", "server", ss.name)
+
+			newClient, err := dialAndInit(ctx, ss.params)
+			if err != nil {
+				slog.Debug("mcp.pool.dead_poll_failed", "server", ss.name, "error", err)
+				continue
+			}
+
+			ss.swapAndRestore(newClient)
+			slog.Info("mcp.pool.dead_poll_recovered", "server", ss.name)
+			return
 		}
 	}
 }

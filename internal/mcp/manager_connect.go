@@ -13,20 +13,23 @@ import (
 	"github.com/nextlevelbuilder/goclaw/internal/tools"
 )
 
-// connectAndDiscover creates a client, initializes the MCP handshake, and
-// discovers tools. Returns a connected serverState with discovered tool
-// definitions. The caller is responsible for registering tools and starting
-// the health loop. This function is shared by both Manager and Pool.
-func connectAndDiscover(ctx context.Context, name, transportType, command string, args []string, env map[string]string, url string, headers map[string]string, timeoutSec int) (*serverState, []mcpgo.Tool, error) {
-	client, err := createClient(transportType, command, args, env, url, headers)
+// reconnectPollInterval is how often waitForReconnect checks the connected flag.
+const reconnectPollInterval = 500 * time.Millisecond
+
+// dialAndInit creates an MCP client, starts the transport (for non-stdio),
+// and performs the Initialize handshake. On any failure the client is closed
+// and an error is returned. This is the single place that implements the
+// create→Start→Initialize sequence used by connect, reconnect, and discovery.
+func dialAndInit(ctx context.Context, cp ConnParams) (*mcpclient.Client, error) {
+	client, err := createClient(cp)
 	if err != nil {
-		return nil, nil, fmt.Errorf("create client: %w", err)
+		return nil, fmt.Errorf("create client: %w", err)
 	}
 
-	if transportType != "stdio" {
+	if cp.Transport != "stdio" {
 		if err := client.Start(ctx); err != nil {
 			_ = client.Close()
-			return nil, nil, fmt.Errorf("start transport: %w", err)
+			return nil, fmt.Errorf("start transport: %w", err)
 		}
 	}
 
@@ -39,7 +42,36 @@ func connectAndDiscover(ctx context.Context, name, transportType, command string
 
 	if _, err := client.Initialize(ctx, initReq); err != nil {
 		_ = client.Close()
-		return nil, nil, fmt.Errorf("initialize: %w", err)
+		return nil, fmt.Errorf("initialize: %w", err)
+	}
+
+	return client, nil
+}
+
+// swapAndRestore atomically swaps the client in the holder and resets
+// the serverState connection flags. The old client is closed.
+func (ss *serverState) swapAndRestore(newClient *mcpclient.Client) {
+	oldClient := ss.holder.Swap(newClient)
+	if oldClient != nil {
+		_ = oldClient.Close()
+	}
+
+	ss.dead.Store(false)
+	ss.connected.Store(true)
+	ss.mu.Lock()
+	ss.reconnAttempts = 0
+	ss.lastErr = ""
+	ss.mu.Unlock()
+}
+
+// connectAndDiscover creates a client, initializes the MCP handshake, and
+// discovers tools. Returns a connected serverState with discovered tool
+// definitions. The caller is responsible for registering tools and starting
+// the health loop. This function is shared by both Manager and Pool.
+func connectAndDiscover(ctx context.Context, name string, cp ConnParams, timeoutSec int) (*serverState, []mcpgo.Tool, error) {
+	client, err := dialAndInit(ctx, cp)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	toolsResult, err := client.ListTools(ctx, mcpgo.ListToolsRequest{})
@@ -54,8 +86,8 @@ func connectAndDiscover(ctx context.Context, name, transportType, command string
 
 	ss := &serverState{
 		name:       name,
-		transport:  transportType,
-		client:     client,
+		params:     cp,
+		holder:     &clientHolder{client: client},
 		timeoutSec: timeoutSec,
 	}
 	ss.connected.Store(true)
@@ -64,8 +96,8 @@ func connectAndDiscover(ctx context.Context, name, transportType, command string
 }
 
 // connectServer creates a client, initializes the connection, discovers tools, and registers them.
-func (m *Manager) connectServer(ctx context.Context, name, transportType, command string, args []string, env map[string]string, url string, headers map[string]string, toolPrefix string, timeoutSec int) error {
-	ss, mcpTools, err := connectAndDiscover(ctx, name, transportType, command, args, env, url, headers, timeoutSec)
+func (m *Manager) connectServer(ctx context.Context, name string, cp ConnParams, toolPrefix string, timeoutSec int) error {
+	ss, mcpTools, err := connectAndDiscover(ctx, name, cp, timeoutSec)
 	if err != nil {
 		return err
 	}
@@ -92,7 +124,7 @@ func (m *Manager) connectServer(ctx context.Context, name, transportType, comman
 
 	slog.Info("mcp.server.connected",
 		"server", name,
-		"transport", transportType,
+		"transport", cp.Transport,
 		"tools", len(registeredNames),
 	)
 
@@ -101,10 +133,11 @@ func (m *Manager) connectServer(ctx context.Context, name, transportType, comman
 
 // registerBridgeTools creates BridgeTools from MCP tool definitions and
 // registers them in the Manager's registry. Returns registered tool names.
+// Works for both standalone serverState and pool-backed entries.
 func (m *Manager) registerBridgeTools(ss *serverState, mcpTools []mcpgo.Tool, serverName, toolPrefix string, timeoutSec int) []string {
 	var registeredNames []string
 	for _, mcpTool := range mcpTools {
-		bt := NewBridgeTool(serverName, mcpTool, ss.client, toolPrefix, timeoutSec, &ss.connected)
+		bt := NewBridgeTool(serverName, mcpTool, ss.holder, toolPrefix, timeoutSec, &ss.connected, &ss.dead)
 
 		if _, exists := m.registry.Get(bt.Name()); exists {
 			slog.Warn("mcp.tool.name_collision",
@@ -123,14 +156,14 @@ func (m *Manager) registerBridgeTools(ss *serverState, mcpTools []mcpgo.Tool, se
 
 // connectViaPool acquires a shared connection from the pool and creates
 // per-agent BridgeTools pointing to the shared client/connected pointers.
-func (m *Manager) connectViaPool(ctx context.Context, name, transportType, command string, args []string, env map[string]string, url string, headers map[string]string, toolPrefix string, timeoutSec int) error {
-	entry, err := m.pool.Acquire(ctx, name, transportType, command, args, env, url, headers, timeoutSec)
+func (m *Manager) connectViaPool(ctx context.Context, name string, cp ConnParams, toolPrefix string, timeoutSec int) error {
+	entry, err := m.pool.Acquire(ctx, name, cp, timeoutSec)
 	if err != nil {
 		return err
 	}
 
 	// Create per-agent BridgeTools from the pool's shared connection
-	registeredNames := m.registerPoolBridgeTools(entry, name, toolPrefix, timeoutSec)
+	registeredNames := m.registerBridgeTools(entry.state, entry.tools, name, toolPrefix, timeoutSec)
 
 	// Track server state and per-agent tool names
 	m.mu.Lock()
@@ -152,59 +185,36 @@ func (m *Manager) connectViaPool(ctx context.Context, name, transportType, comma
 
 	slog.Info("mcp.server.connected_via_pool",
 		"server", name,
-		"transport", transportType,
+		"transport", cp.Transport,
 		"tools", len(registeredNames),
 	)
 
 	return nil
 }
 
-// registerPoolBridgeTools creates BridgeTools from pool entry's discovered tools,
-// pointing to the shared client/connected pointers. Returns registered tool names.
-func (m *Manager) registerPoolBridgeTools(entry *poolEntry, serverName, toolPrefix string, timeoutSec int) []string {
-	var registeredNames []string
-	for _, mcpTool := range entry.tools {
-		bt := NewBridgeTool(serverName, mcpTool, entry.state.client, toolPrefix, timeoutSec, &entry.state.connected)
-
-		if _, exists := m.registry.Get(bt.Name()); exists {
-			slog.Warn("mcp.tool.name_collision",
-				"server", serverName,
-				"tool", bt.Name(),
-				"action", "skipped",
-			)
-			continue
-		}
-
-		m.registry.Register(bt)
-		registeredNames = append(registeredNames, bt.Name())
-	}
-
-	return registeredNames
-}
-
 // createClient creates the appropriate MCP client based on transport type.
-func createClient(transportType, command string, args []string, env map[string]string, url string, headers map[string]string) (*mcpclient.Client, error) {
-	switch transportType {
+func createClient(cp ConnParams) (*mcpclient.Client, error) {
+	switch cp.Transport {
 	case "stdio":
-		envSlice := mapToEnvSlice(env)
-		return mcpclient.NewStdioMCPClient(command, envSlice, args...)
+		envSlice := mapToEnvSlice(cp.Env)
+		return mcpclient.NewStdioMCPClient(cp.Command, envSlice, cp.Args...)
 
 	case "sse":
 		var opts []transport.ClientOption
-		if len(headers) > 0 {
-			opts = append(opts, mcpclient.WithHeaders(headers))
+		if len(cp.Headers) > 0 {
+			opts = append(opts, mcpclient.WithHeaders(cp.Headers))
 		}
-		return mcpclient.NewSSEMCPClient(url, opts...)
+		return mcpclient.NewSSEMCPClient(cp.URL, opts...)
 
 	case "streamable-http":
 		var opts []transport.StreamableHTTPCOption
-		if len(headers) > 0 {
-			opts = append(opts, transport.WithHTTPHeaders(headers))
+		if len(cp.Headers) > 0 {
+			opts = append(opts, transport.WithHTTPHeaders(cp.Headers))
 		}
-		return mcpclient.NewStreamableHttpClient(url, opts...)
+		return mcpclient.NewStreamableHttpClient(cp.URL, opts...)
 
 	default:
-		return nil, fmt.Errorf("unsupported transport: %q", transportType)
+		return nil, fmt.Errorf("unsupported transport: %q", cp.Transport)
 	}
 }
 
@@ -229,7 +239,7 @@ func (m *Manager) healthLoop(ctx context.Context, ss *serverState) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := ss.client.Ping(ctx); err != nil {
+			if err := ss.client().Ping(ctx); err != nil {
 				if isMethodNotFound(err) {
 					ss.connected.Store(true)
 					ss.mu.Lock()
@@ -242,6 +252,22 @@ func (m *Manager) healthLoop(ctx context.Context, ss *serverState) {
 				ss.mu.Lock()
 				ss.lastErr = err.Error()
 				ss.mu.Unlock()
+
+				if ss.dead.Load() {
+					// Switch to slow-poll: try full reconnect every deadPollInterval.
+					// Server may come back after deploy/restart.
+					slog.Info("mcp.server.dead_poll_start", "server", ss.name, "interval", deadPollInterval)
+					ticker.Stop()
+					m.deadPoll(ctx, ss)
+					if !ss.connected.Load() {
+						// deadPoll exited because ctx was cancelled
+						return
+					}
+					// Revived — resume normal health checks
+					ticker.Reset(healthCheckInterval)
+					slog.Info("mcp.server.revived", "server", ss.name)
+					continue
+				}
 
 				slog.Warn("mcp.server.health_failed", "server", ss.name, "error", err)
 				m.tryReconnect(ctx, ss)
@@ -262,6 +288,7 @@ func (m *Manager) tryReconnect(ctx context.Context, ss *serverState) {
 	if ss.reconnAttempts >= maxReconnectAttempts {
 		ss.lastErr = fmt.Sprintf("max reconnect attempts (%d) reached", maxReconnectAttempts)
 		ss.mu.Unlock()
+		ss.dead.Store(true)
 		slog.Error("mcp.server.reconnect_exhausted", "server", ss.name)
 		return
 	}
@@ -283,13 +310,51 @@ func (m *Manager) tryReconnect(ctx context.Context, ss *serverState) {
 	case <-time.After(backoff):
 	}
 
-	// Try to ping again — transport may have auto-reconnected
-	if err := ss.client.Ping(ctx); err == nil {
+	// Try ping first — transport may have auto-reconnected (e.g. stdio restart).
+	if err := ss.client().Ping(ctx); err == nil {
 		ss.connected.Store(true)
 		ss.mu.Lock()
 		ss.reconnAttempts = 0
 		ss.lastErr = ""
 		ss.mu.Unlock()
 		slog.Info("mcp.server.reconnected", "server", ss.name)
+		return
+	}
+
+	// Ping failed — create a fresh client (handles SESSION_EXPIRED, etc.).
+	newClient, err := dialAndInit(ctx, ss.params)
+	if err != nil {
+		slog.Warn("mcp.server.reconnect_failed", "server", ss.name, "error", err)
+		return
+	}
+
+	ss.swapAndRestore(newClient)
+	slog.Info("mcp.server.reconnected", "server", ss.name, "method", "new_client")
+}
+
+// deadPoll periodically attempts a full reconnect after all fast retries are
+// exhausted. Runs every deadPollInterval until the server comes back or ctx
+// is cancelled. On success it clears the dead flag and restores connected.
+func (m *Manager) deadPoll(ctx context.Context, ss *serverState) {
+	ticker := time.NewTicker(deadPollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			slog.Debug("mcp.server.dead_poll_attempt", "server", ss.name)
+
+			newClient, err := dialAndInit(ctx, ss.params)
+			if err != nil {
+				slog.Debug("mcp.server.dead_poll_failed", "server", ss.name, "error", err)
+				continue
+			}
+
+			ss.swapAndRestore(newClient)
+			slog.Info("mcp.server.dead_poll_recovered", "server", ss.name)
+			return
+		}
 	}
 }
