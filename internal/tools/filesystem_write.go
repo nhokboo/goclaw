@@ -55,7 +55,7 @@ func (t *WriteFileTool) SetSandboxKey(key string) {}
 
 func (t *WriteFileTool) Name() string { return "write_file" }
 func (t *WriteFileTool) Description() string {
-	return "Write content to a file, creating directories as needed"
+	return "Write content to a file, creating directories as needed. IMPORTANT: Always write the COMPLETE file in a single call. NEVER split a file into multiple parts (1a, 1b, etc.). There is no size limit on the content parameter."
 }
 func (t *WriteFileTool) Parameters() map[string]any {
 	return map[string]any{

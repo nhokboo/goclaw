@@ -3,7 +3,9 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/nextlevelbuilder/goclaw/internal/agent"
 	"github.com/nextlevelbuilder/goclaw/internal/config"
@@ -20,7 +22,11 @@ func makeSchedulerRunFunc(agents *agent.Router, cfg *config.Config) scheduler.Ru
 			agentID = parts[1]
 		}
 
+		t0 := time.Now()
 		loop, err := agents.Get(agentID)
+		if d := time.Since(t0); d > 500*time.Millisecond {
+			slog.Warn("agent.resolve.slow", "agent", agentID, "duration", d)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("agent %s not found: %w", agentID, err)
 		}

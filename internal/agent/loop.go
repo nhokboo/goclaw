@@ -77,6 +77,7 @@ func (l *Loop) runLoop(ctx context.Context, req RunRequest) (*RunResult, error) 
 	// Per-user workspace isolation.
 	// Workspace path comes from user_agent_profiles (includes channel segment
 	// for cross-channel isolation). Cached in userWorkspaces to avoid repeated DB queries.
+	preLLMStart := time.Now()
 	if l.workspace != "" && req.UserID != "" {
 		cachedWs, loaded := l.userWorkspaces.Load(req.UserID)
 		if !loaded {
@@ -84,8 +85,12 @@ func (l *Loop) runLoop(ctx context.Context, req RunRequest) (*RunResult, error) 
 			// Also seeds per-user context files on first chat.
 			ws := l.workspace
 			if l.ensureUserFiles != nil {
+				t0 := time.Now()
 				var err error
 				ws, err = l.ensureUserFiles(ctx, l.agentUUID, req.UserID, l.agentType, l.workspace, req.Channel)
+				if d := time.Since(t0); d > 500*time.Millisecond {
+					slog.Warn("agent.pre_llm.slow", "step", "ensureUserFiles", "agent", l.id, "duration", d)
+				}
 				if err != nil {
 					slog.Warn("failed to ensure user context files", "error", err)
 					ws = l.workspace
@@ -166,12 +171,20 @@ func (l *Loop) runLoop(ctx context.Context, req RunRequest) (*RunResult, error) 
 	}
 
 	// 1. Build messages from session history
+	t0 := time.Now()
 	history := l.sessions.GetHistory(req.SessionKey)
 	summary := l.sessions.GetSummary(req.SessionKey)
+	if d := time.Since(t0); d > 500*time.Millisecond {
+		slog.Warn("agent.pre_llm.slow", "step", "getHistory", "agent", l.id, "duration", d)
+	}
 
 	// buildMessages resolves context files once and also detects BOOTSTRAP.md presence
 	// (hadBootstrap) — no extra DB roundtrip needed for bootstrap detection.
+	t0 = time.Now()
 	messages, hadBootstrap := l.buildMessages(ctx, history, summary, req.Message, req.ExtraSystemPrompt, req.SessionKey, req.Channel, req.ChannelType, req.PeerKind, req.UserID, req.HistoryLimit, req.SkillFilter)
+	if d := time.Since(t0); d > 500*time.Millisecond {
+		slog.Warn("agent.pre_llm.slow", "step", "buildMessages", "agent", l.id, "duration", d)
+	}
 
 	// 1b. Determine image routing strategy.
 	// If read_image tool has a dedicated vision provider, images are NOT attached inline
@@ -181,7 +194,11 @@ func (l *Loop) runLoop(ctx context.Context, req RunRequest) (*RunResult, error) 
 
 	if !deferToReadImageTool {
 		// Inline mode: reload historical images directly into messages for main provider.
+		t0 = time.Now()
 		l.reloadMediaForMessages(messages, maxMediaReloadMessages)
+		if d := time.Since(t0); d > 500*time.Millisecond {
+			slog.Warn("agent.pre_llm.slow", "step", "reloadMedia", "agent", l.id, "duration", d)
+		}
 	}
 
 	// 2. Process media: sanitize images, persist to media store.
@@ -277,6 +294,7 @@ func (l *Loop) runLoop(ctx context.Context, req RunRequest) (*RunResult, error) 
 	// Safe because Bước 1 (early ClaimTask) ensures running tasks are in_progress,
 	// so only truly un-spawned tasks remain pending.
 	if l.teamStore != nil && l.agentUUID != uuid.Nil {
+		t0 = time.Now()
 		if team, _ := l.teamStore.GetTeamForAgent(ctx, l.agentUUID); team != nil && team.LeadAgentID == l.agentUUID {
 			if tasks, err := l.teamStore.ListTasks(ctx, team.ID, "newest", "", req.UserID); err == nil {
 				var stale []string
@@ -313,6 +331,13 @@ func (l *Loop) runLoop(ctx context.Context, req RunRequest) (*RunResult, error) 
 				}
 			}
 		}
+		if d := time.Since(t0); d > 500*time.Millisecond {
+			slog.Warn("agent.pre_llm.slow", "step", "teamTaskRecovery", "agent", l.id, "duration", d)
+		}
+	}
+
+	if d := time.Since(preLLMStart); d > 2*time.Second {
+		slog.Warn("agent.pre_llm.total_slow", "agent", l.id, "duration", d)
 	}
 
 	// 3. Buffer new messages — write to session only AFTER the run completes.

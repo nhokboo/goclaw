@@ -17,14 +17,22 @@ import (
 // discovers tools. Returns a connected serverState with discovered tool
 // definitions. The caller is responsible for registering tools and starting
 // the health loop. This function is shared by both Manager and Pool.
+// connectTimeout caps how long we wait for a new MCP handshake (Start + Initialize + ListTools).
+const connectTimeout = 30 * time.Second
+
 func connectAndDiscover(ctx context.Context, name, transportType, command string, args []string, env map[string]string, url string, headers map[string]string, timeoutSec int) (*serverState, []mcpgo.Tool, error) {
+	// Ensure connect phase cannot block indefinitely — guards against
+	// unresponsive MCP servers hanging the agent resolver.
+	connCtx, connCancel := context.WithTimeout(ctx, connectTimeout)
+	defer connCancel()
+
 	client, err := createClient(transportType, command, args, env, url, headers)
 	if err != nil {
 		return nil, nil, fmt.Errorf("create client: %w", err)
 	}
 
 	if transportType != "stdio" {
-		if err := client.Start(ctx); err != nil {
+		if err := client.Start(connCtx); err != nil {
 			_ = client.Close()
 			return nil, nil, fmt.Errorf("start transport: %w", err)
 		}
@@ -37,12 +45,12 @@ func connectAndDiscover(ctx context.Context, name, transportType, command string
 		Version: "1.0.0",
 	}
 
-	if _, err := client.Initialize(ctx, initReq); err != nil {
+	if _, err := client.Initialize(connCtx, initReq); err != nil {
 		_ = client.Close()
 		return nil, nil, fmt.Errorf("initialize: %w", err)
 	}
 
-	toolsResult, err := client.ListTools(ctx, mcpgo.ListToolsRequest{})
+	toolsResult, err := client.ListTools(connCtx, mcpgo.ListToolsRequest{})
 	if err != nil {
 		_ = client.Close()
 		return nil, nil, fmt.Errorf("list tools: %w", err)
