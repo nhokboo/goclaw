@@ -26,7 +26,8 @@
       "members": "Members",
       "delegations": "Delegations",
       "workspace": "Workspace",
-      "settings": "Settings"
+      "settings": "Settings",
+      "backup": "Backup"
     }
   },
   "members": {
@@ -257,5 +258,23 @@
     "taskAssigned": "Task assigned",
     "failedCreateTask": "Failed to create task",
     "failedAssignTask": "Failed to assign task"
+  },
+  "backup": {
+    "title": "Backup & Restore",
+    "createBackup": "Create Backup",
+    "creating": "Creating backup...",
+    "created": "Backup created",
+    "list": "Backup History",
+    "empty": "No backups yet",
+    "download": "Download",
+    "restore": "Restore",
+    "restoreFromFile": "Restore from File",
+    "selectFile": "Select .tar.gz file",
+    "confirmTitle": "Restore Team Workspace?",
+    "confirmDescription": "This will overwrite the current team workspace files. This action cannot be undone.",
+    "confirmButton": "Yes, Restore",
+    "restoring": "Restoring...",
+    "restored": "Restored successfully",
+    "failed": "Restore failed"
   }
 }

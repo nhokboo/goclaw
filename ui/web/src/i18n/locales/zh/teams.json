@@ -26,7 +26,8 @@
       "members": "成员",
       "delegations": "委托",
       "workspace": "工作空间",
-      "settings": "设置"
+      "settings": "设置",
+      "backup": "备份"
     }
   },
   "members": {
@@ -257,5 +258,23 @@
     "taskAssigned": "任务已分配",
     "failedCreateTask": "创建任务失败",
     "failedAssignTask": "分配任务失败"
+  },
+  "backup": {
+    "title": "备份与恢复",
+    "createBackup": "创建备份",
+    "creating": "正在创建备份...",
+    "created": "备份已创建",
+    "list": "备份历史",
+    "empty": "暂无备份",
+    "download": "下载",
+    "restore": "恢复",
+    "restoreFromFile": "从文件恢复",
+    "selectFile": "选择 .tar.gz 文件",
+    "confirmTitle": "恢复团队工作空间？",
+    "confirmDescription": "此操作将覆盖当前团队工作空间文件，无法撤销。",
+    "confirmButton": "确认恢复",
+    "restoring": "正在恢复...",
+    "restored": "恢复成功",
+    "failed": "恢复失败"
   }
 }

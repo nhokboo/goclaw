@@ -739,6 +739,11 @@ func runGateway() {
 		server.SetUsageHandler(httpapi.NewUsageHandler(pgStores.Snapshots, pgStores.DB, cfg.Gateway.Token))
 	}
 
+	// Backup/restore API
+	if pgStores.Agents != nil && pgStores.Teams != nil {
+		server.SetBackupRestoreHandler(httpapi.NewBackupRestoreHandler(pgStores.Agents, pgStores.Teams, cfg.Gateway.Token, dataDir, msgBus, permPE.IsOwner))
+	}
+
 	// Memory management API (wired directly, only needs MemoryStore + token)
 	if pgStores != nil && pgStores.Memory != nil {
 		server.SetMemoryHandler(httpapi.NewMemoryHandler(pgStores.Memory, cfg.Gateway.Token))

@@ -85,7 +85,8 @@
       "shares": "Shares",
       "links": "Links",
       "skills": "Skills",
-      "instances": "Instances"
+      "instances": "Instances",
+      "backup": "Backup"
     },
     "summonFailed": "Summon Failed",
     "evolving": "Evolving",
@@ -392,5 +393,30 @@
       "formatJson": "Format JSON",
       "invalidJson": "Invalid JSON syntax"
     }
+  },
+  "backup": {
+    "title": "Backup & Restore",
+    "modeWorkspace": "Workspace only",
+    "modeFull": "Full (workspace + config)",
+    "createBackup": "Create Backup",
+    "creating": "Creating backup...",
+    "created": "Backup created",
+    "list": "Backup History",
+    "empty": "No backups yet",
+    "download": "Download",
+    "restore": "Restore",
+    "restoreWorkspace": "Restore workspace only",
+    "restoreAll": "Restore all",
+    "restoreFromFile": "Restore from File",
+    "selectFile": "Select .tar.gz file",
+    "scopeWorkspace": "Workspace only",
+    "scopeFull": "Full",
+    "confirmTitle": "Restore Agent?",
+    "confirmWorkspace": "This will overwrite the current workspace files. This action cannot be undone.",
+    "confirmFull": "This will overwrite the current agent configuration, context files, and workspace. This action cannot be undone.",
+    "confirmButton": "Yes, Restore",
+    "restoring": "Restoring...",
+    "restored": "Restored successfully",
+    "failed": "Restore failed"
   }
 }

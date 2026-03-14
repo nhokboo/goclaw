@@ -85,7 +85,8 @@
       "shares": "Chia sẻ",
       "links": "Liên kết",
       "skills": "Skill",
-      "instances": "Phiên bản người dùng"
+      "instances": "Phiên bản người dùng",
+      "backup": "Sao lưu"
     },
     "summonFailed": "Triệu hồi thất bại",
     "evolving": "Đang tiến hóa",
@@ -392,5 +393,30 @@
       "formatJson": "Định dạng JSON",
       "invalidJson": "Cú pháp JSON không hợp lệ"
     }
+  },
+  "backup": {
+    "title": "Sao lưu & Khôi phục",
+    "modeWorkspace": "Chỉ workspace",
+    "modeFull": "Đầy đủ (workspace + cấu hình)",
+    "createBackup": "Tạo bản sao lưu",
+    "creating": "Đang tạo bản sao lưu...",
+    "created": "Đã tạo bản sao lưu",
+    "list": "Lịch sử sao lưu",
+    "empty": "Chưa có bản sao lưu nào",
+    "download": "Tải về",
+    "restore": "Khôi phục",
+    "restoreWorkspace": "Chỉ khôi phục workspace",
+    "restoreAll": "Khôi phục tất cả",
+    "restoreFromFile": "Khôi phục từ tệp",
+    "selectFile": "Chọn tệp .tar.gz",
+    "scopeWorkspace": "Chỉ workspace",
+    "scopeFull": "Đầy đủ",
+    "confirmTitle": "Khôi phục Agent?",
+    "confirmWorkspace": "Thao tác này sẽ ghi đè các tệp workspace hiện tại. Không thể hoàn tác.",
+    "confirmFull": "Thao tác này sẽ ghi đè cấu hình agent, tệp ngữ cảnh và workspace. Không thể hoàn tác.",
+    "confirmButton": "Đồng ý, Khôi phục",
+    "restoring": "Đang khôi phục...",
+    "restored": "Khôi phục thành công",
+    "failed": "Khôi phục thất bại"
   }
 }

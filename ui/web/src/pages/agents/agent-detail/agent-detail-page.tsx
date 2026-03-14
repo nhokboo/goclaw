@@ -14,6 +14,7 @@ import { AgentSharesTab } from "./agent-shares-tab";
 import { AgentLinksTab } from "./agent-links-tab";
 import { AgentSkillsTab } from "./agent-skills-tab";
 import { AgentInstancesTab } from "./agent-instances-tab";
+import { AgentBackupTab } from "./agent-backup-tab";
 import { SummoningModal } from "../summoning-modal";
 import { ConfirmDeleteDialog } from "@/components/shared/confirm-delete-dialog";
 import { DetailPageSkeleton } from "@/components/shared/loading-skeleton";
@@ -158,6 +159,7 @@ export function AgentDetailPage({ agentId, onBack }: AgentDetailPageProps) {
             {agent.agent_type === "predefined" && (
               <TabsTrigger value="instances">{t("detail.tabs.instances")}</TabsTrigger>
             )}
+            <TabsTrigger value="backup">{t("detail.tabs.backup")}</TabsTrigger>
           </TabsList>
 
           <TabsContent value="general" className="mt-4">
@@ -196,6 +198,10 @@ export function AgentDetailPage({ agentId, onBack }: AgentDetailPageProps) {
               <AgentInstancesTab agentId={agentId} />
             </TabsContent>
           )}
+
+          <TabsContent value="backup" className="mt-4">
+            <AgentBackupTab agentId={agentId} />
+          </TabsContent>
 
         </Tabs>
       </div>

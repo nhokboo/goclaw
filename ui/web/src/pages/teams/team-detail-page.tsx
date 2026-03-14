@@ -13,6 +13,7 @@ import { TeamTasksTab } from "./team-tasks-tab";
 import { TeamDelegationsTab } from "./team-delegations-tab";
 import { TeamSettingsTab } from "./team-settings-tab";
 import { TeamWorkspaceTab } from "./team-workspace-tab";
+import { TeamBackupTab } from "./team-backup-tab";
 import type { TeamData, TeamMemberData, TeamAccessSettings, ScopeEntry } from "@/types/team";
 
 interface TeamDetailPageProps {
@@ -150,6 +151,7 @@ export function TeamDetailPage({ teamId, onBack }: TeamDetailPageProps) {
             <TabsTrigger value="delegations">{t("detail.tabs.delegations")}</TabsTrigger>
             <TabsTrigger value="workspace">{t("detail.tabs.workspace")}</TabsTrigger>
             <TabsTrigger value="settings">{t("detail.tabs.settings")}</TabsTrigger>
+            <TabsTrigger value="backup">{t("detail.tabs.backup")}</TabsTrigger>
           </TabsList>
 
           <TabsContent value="members" className="mt-4">
@@ -187,6 +189,10 @@ export function TeamDetailPage({ teamId, onBack }: TeamDetailPageProps) {
 
           <TabsContent value="settings" className="mt-4">
             <TeamSettingsTab teamId={teamId} team={team} onSaved={reload} />
+          </TabsContent>
+
+          <TabsContent value="backup" className="mt-4">
+            <TeamBackupTab teamId={teamId} />
           </TabsContent>
         </Tabs>
       </div>

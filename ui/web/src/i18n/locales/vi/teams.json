@@ -26,7 +26,8 @@
       "members": "Thành viên",
       "delegations": "Ủy quyền",
       "workspace": "Không gian làm việc",
-      "settings": "Cài đặt"
+      "settings": "Cài đặt",
+      "backup": "Sao lưu"
     }
   },
   "members": {
@@ -257,5 +258,23 @@
     "taskAssigned": "Đã gán nhiệm vụ",
     "failedCreateTask": "Không thể tạo nhiệm vụ",
     "failedAssignTask": "Không thể gán nhiệm vụ"
+  },
+  "backup": {
+    "title": "Sao lưu & Khôi phục",
+    "createBackup": "Tạo bản sao lưu",
+    "creating": "Đang tạo bản sao lưu...",
+    "created": "Đã tạo bản sao lưu",
+    "list": "Lịch sử sao lưu",
+    "empty": "Chưa có bản sao lưu nào",
+    "download": "Tải về",
+    "restore": "Khôi phục",
+    "restoreFromFile": "Khôi phục từ tệp",
+    "selectFile": "Chọn tệp .tar.gz",
+    "confirmTitle": "Khôi phục workspace nhóm?",
+    "confirmDescription": "Thao tác này sẽ ghi đè các tệp workspace nhóm hiện tại. Không thể hoàn tác.",
+    "confirmButton": "Đồng ý, Khôi phục",
+    "restoring": "Đang khôi phục...",
+    "restored": "Khôi phục thành công",
+    "failed": "Khôi phục thất bại"
   }
 }
