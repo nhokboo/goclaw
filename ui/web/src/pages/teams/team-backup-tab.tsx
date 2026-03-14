@@ -10,7 +10,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Download, Upload, RotateCcw, Archive } from "lucide-react";
+import { Download, Upload, RotateCcw, Archive, Trash2 } from "lucide-react";
 import { useHttp } from "@/hooks/use-ws";
 import { toast } from "@/stores/use-toast-store";
 
@@ -37,21 +37,30 @@ export function TeamBackupTab({ teamId }: TeamBackupTabProps) {
   const { t } = useTranslation("teams");
   const http = useHttp();
   const [backups, setBackups] = useState<BackupEntry[]>([]);
+  const [maxBackups, setMaxBackups] = useState(5);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [restoring, setRestoring] = useState(false);
 
-  // Confirm dialog
+  // Confirm restore dialog
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [confirmFilename, setConfirmFilename] = useState<string | null>(null);
   const [confirmFile, setConfirmFile] = useState<File | null>(null);
+
+  // Confirm delete oldest dialog (when at max)
+  const [limitOpen, setLimitOpen] = useState(false);
+
+  // Confirm delete single backup dialog
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleteFilename, setDeleteFilename] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const loadBackups = useCallback(async () => {
     try {
-      const res = await http.get<{ backups: BackupEntry[] }>(`/v1/teams/${teamId}/backups`);
+      const res = await http.get<{ backups: BackupEntry[]; max: number }>(`/v1/teams/${teamId}/backups`);
       setBackups(res.backups ?? []);
+      if (res.max) setMaxBackups(res.max);
     } catch {
       // ignore
     } finally {
@@ -63,7 +72,7 @@ export function TeamBackupTab({ teamId }: TeamBackupTabProps) {
     loadBackups();
   }, [loadBackups]);
 
-  const handleCreateBackup = async () => {
+  const doCreateBackup = async () => {
     setCreating(true);
     try {
       await http.post(`/v1/teams/${teamId}/backup`);
@@ -73,6 +82,47 @@ export function TeamBackupTab({ teamId }: TeamBackupTabProps) {
       toast.error(t("backup.failed"));
     } finally {
       setCreating(false);
+    }
+  };
+
+  const handleCreateBackup = () => {
+    if (backups.length >= maxBackups) {
+      setLimitOpen(true);
+      return;
+    }
+    doCreateBackup();
+  };
+
+  const handleConfirmLimitBackup = async () => {
+    setLimitOpen(false);
+    const oldest = backups[backups.length - 1];
+    if (oldest) {
+      try {
+        await http.delete(`/v1/teams/${teamId}/backups/${encodeURIComponent(oldest.filename)}`);
+      } catch {
+        toast.error(t("backup.deleteFailed"));
+        return;
+      }
+    }
+    await doCreateBackup();
+  };
+
+  const handleDeleteBackup = (filename: string) => {
+    setDeleteFilename(filename);
+    setDeleteOpen(true);
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!deleteFilename) return;
+    try {
+      await http.delete(`/v1/teams/${teamId}/backups/${encodeURIComponent(deleteFilename)}`);
+      toast.success(t("backup.deleted"));
+      await loadBackups();
+    } catch {
+      toast.error(t("backup.deleteFailed"));
+    } finally {
+      setDeleteOpen(false);
+      setDeleteFilename(null);
     }
   };
 
@@ -140,10 +190,15 @@ export function TeamBackupTab({ teamId }: TeamBackupTabProps) {
           <h4 className="text-sm font-medium text-muted-foreground">
             {t("backup.createBackup")}
           </h4>
-          <Button onClick={handleCreateBackup} disabled={creating} size="sm">
-            <Archive className="mr-1.5 h-3.5 w-3.5" />
-            {creating ? t("backup.creating") : t("backup.createBackup")}
-          </Button>
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-muted-foreground">
+              {backups.length}/{maxBackups}
+            </span>
+            <Button onClick={handleCreateBackup} disabled={creating} size="sm">
+              <Archive className="mr-1.5 h-3.5 w-3.5" />
+              {creating ? t("backup.creating") : t("backup.createBackup")}
+            </Button>
+          </div>
         </div>
       </div>
 
@@ -187,6 +242,14 @@ export function TeamBackupTab({ teamId }: TeamBackupTabProps) {
                   >
                     <RotateCcw className="mr-1 h-3.5 w-3.5" />
                     {t("backup.restore")}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                    onClick={() => handleDeleteBackup(b.filename)}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
                   </Button>
                 </div>
               </div>
@@ -238,6 +301,46 @@ export function TeamBackupTab({ teamId }: TeamBackupTabProps) {
               disabled={restoring}
             >
               {restoring ? t("backup.restoring") : t("backup.confirmButton")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Confirm Delete Oldest (limit reached) */}
+      <Dialog open={limitOpen} onOpenChange={setLimitOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t("backup.limitTitle")}</DialogTitle>
+            <DialogDescription>
+              {t("backup.limitDescription", { max: maxBackups, oldest: backups[backups.length - 1]?.filename ?? "" })}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setLimitOpen(false)}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={handleConfirmLimitBackup} disabled={creating}>
+              {creating ? t("backup.creating") : t("backup.limitConfirm")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Confirm Delete Single Backup */}
+      <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t("backup.deleteTitle")}</DialogTitle>
+            <DialogDescription>
+              {t("backup.deleteDescription", { filename: deleteFilename ?? "" })}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteOpen(false)}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={handleConfirmDelete}>
+              {t("backup.deleteConfirm")}
             </Button>
           </DialogFooter>
         </DialogContent>

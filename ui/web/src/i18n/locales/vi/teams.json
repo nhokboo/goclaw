@@ -275,6 +275,14 @@
     "confirmButton": "Đồng ý, Khôi phục",
     "restoring": "Đang khôi phục...",
     "restored": "Khôi phục thành công",
-    "failed": "Khôi phục thất bại"
+    "failed": "Khôi phục thất bại",
+    "deleted": "Đã xóa bản sao lưu",
+    "deleteFailed": "Xóa bản sao lưu thất bại",
+    "deleteTitle": "Xóa bản sao lưu?",
+    "deleteDescription": "Xóa \"{{filename}}\"? Thao tác này không thể hoàn tác.",
+    "deleteConfirm": "Xóa",
+    "limitTitle": "Đã đạt giới hạn sao lưu",
+    "limitDescription": "Tối đa {{max}} bản sao lưu. Bản cũ nhất \"{{oldest}}\" sẽ bị xóa để tạo chỗ.",
+    "limitConfirm": "Xóa cũ nhất & Tạo mới"
   }
 }

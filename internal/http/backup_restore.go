@@ -80,13 +80,19 @@ func (h *BackupRestoreHandler) authMiddleware(next http.HandlerFunc) http.Handle
 	}
 }
 
+const maxBackupsPerEntity = 5
+
 // RegisterRoutes registers all backup/restore routes.
 func (h *BackupRestoreHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/agents/{id}/backup", h.authMiddleware(h.handleAgentBackup))
 	mux.HandleFunc("GET /v1/agents/{id}/backups", h.authMiddleware(h.handleAgentListBackups))
+	mux.HandleFunc("GET /v1/agents/{id}/backups/{filename}", h.authMiddleware(h.handleAgentDownloadBackup))
+	mux.HandleFunc("DELETE /v1/agents/{id}/backups/{filename}", h.authMiddleware(h.handleAgentDeleteBackup))
 	mux.HandleFunc("POST /v1/agents/{id}/restore", h.authMiddleware(h.handleAgentRestore))
 	mux.HandleFunc("POST /v1/teams/{id}/backup", h.authMiddleware(h.handleTeamBackup))
 	mux.HandleFunc("GET /v1/teams/{id}/backups", h.authMiddleware(h.handleTeamListBackups))
+	mux.HandleFunc("GET /v1/teams/{id}/backups/{filename}", h.authMiddleware(h.handleTeamDownloadBackup))
+	mux.HandleFunc("DELETE /v1/teams/{id}/backups/{filename}", h.authMiddleware(h.handleTeamDeleteBackup))
 	mux.HandleFunc("POST /v1/teams/{id}/restore", h.authMiddleware(h.handleTeamRestore))
 }
 
@@ -189,8 +195,10 @@ func (h *BackupRestoreHandler) handleAgentBackup(w http.ResponseWriter, r *http.
 	}
 
 	// Walk workspace directory
+	wsFileCount := 0
 	if agent.Workspace != "" {
 		workspaceRoot := agent.Workspace
+		slog.Info("agent backup: walking workspace", "workspace", workspaceRoot)
 		if info, err := os.Stat(workspaceRoot); err == nil && info.IsDir() {
 			filepath.Walk(workspaceRoot, func(path string, info os.FileInfo, err error) error {
 				if err != nil || info.IsDir() {
@@ -209,10 +217,16 @@ func (h *BackupRestoreHandler) handleAgentBackup(w http.ResponseWriter, r *http.
 					return nil
 				}
 				writeTarFile(tw, prefix+"/workspace/"+rel, data)
+				wsFileCount++
 				return nil
 			})
+		} else {
+			slog.Warn("agent backup: workspace dir not found or not a dir", "workspace", workspaceRoot, "error", err)
 		}
+	} else {
+		slog.Warn("agent backup: agent.Workspace is empty", "agent_id", agentID)
 	}
+	slog.Info("agent backup: workspace files added", "count", wsFileCount)
 
 	tw.Close()
 	gw.Close()
@@ -245,7 +259,27 @@ func (h *BackupRestoreHandler) handleAgentListBackups(w http.ResponseWriter, r *
 
 	dir := filepath.Join(backupExportBase, "agents", agentID.String())
 	backups := listBackupFiles(dir)
-	writeJSON(w, http.StatusOK, map[string]any{"backups": backups})
+	writeJSON(w, http.StatusOK, map[string]any{"backups": backups, "max": maxBackupsPerEntity})
+}
+
+func (h *BackupRestoreHandler) handleAgentDeleteBackup(w http.ResponseWriter, r *http.Request) {
+	locale := store.LocaleFromContext(r.Context())
+	agentID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": i18n.T(locale, i18n.MsgInvalidID, "agent")})
+		return
+	}
+	deleteBackupFile(w, r, filepath.Join(backupExportBase, "agents", agentID.String()), locale)
+}
+
+func (h *BackupRestoreHandler) handleAgentDownloadBackup(w http.ResponseWriter, r *http.Request) {
+	locale := store.LocaleFromContext(r.Context())
+	agentID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": i18n.T(locale, i18n.MsgInvalidID, "agent")})
+		return
+	}
+	serveBackupFile(w, r, filepath.Join(backupExportBase, "agents", agentID.String()), locale)
 }
 
 func (h *BackupRestoreHandler) handleAgentRestore(w http.ResponseWriter, r *http.Request) {
@@ -533,6 +567,8 @@ func (h *BackupRestoreHandler) handleTeamBackup(w http.ResponseWriter, r *http.R
 
 	// Walk workspace files from disk
 	teamDataDir := filepath.Join(h.dataDir, "teams", teamID.String())
+	slog.Info("team backup: listing workspace files", "team_id", teamID, "dataDir", h.dataDir, "teamDataDir", teamDataDir, "file_count", len(wsFiles))
+	wsFileCount := 0
 	for _, wf := range wsFiles {
 		// Build the expected disk path
 		var diskPath string
@@ -542,15 +578,19 @@ func (h *BackupRestoreHandler) handleTeamBackup(w http.ResponseWriter, r *http.R
 			diskPath = filepath.Join(teamDataDir, wf.ChatID, wf.FileName)
 		}
 
+		slog.Debug("team backup: reading file", "file_name", wf.FileName, "chat_id", wf.ChatID, "file_path", wf.FilePath, "disk_path", diskPath)
 		data, err := os.ReadFile(diskPath)
 		if err != nil {
+			slog.Warn("team backup: failed to read file", "disk_path", diskPath, "error", err)
 			continue
 		}
 
 		// Archive as workspace/<chatID>/<fileName>
 		archivePath := filepath.Join("workspace", wf.ChatID, wf.FileName)
 		writeTarFile(tw, prefix+"/"+archivePath, data)
+		wsFileCount++
 	}
+	slog.Info("team backup: workspace files added to archive", "count", wsFileCount)
 
 	tw.Close()
 	gw.Close()
@@ -583,7 +623,27 @@ func (h *BackupRestoreHandler) handleTeamListBackups(w http.ResponseWriter, r *h
 
 	dir := filepath.Join(backupExportBase, "teams", teamID.String())
 	backups := listBackupFiles(dir)
-	writeJSON(w, http.StatusOK, map[string]any{"backups": backups})
+	writeJSON(w, http.StatusOK, map[string]any{"backups": backups, "max": maxBackupsPerEntity})
+}
+
+func (h *BackupRestoreHandler) handleTeamDownloadBackup(w http.ResponseWriter, r *http.Request) {
+	locale := store.LocaleFromContext(r.Context())
+	teamID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": i18n.T(locale, i18n.MsgInvalidID, "team")})
+		return
+	}
+	serveBackupFile(w, r, filepath.Join(backupExportBase, "teams", teamID.String()), locale)
+}
+
+func (h *BackupRestoreHandler) handleTeamDeleteBackup(w http.ResponseWriter, r *http.Request) {
+	locale := store.LocaleFromContext(r.Context())
+	teamID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": i18n.T(locale, i18n.MsgInvalidID, "team")})
+		return
+	}
+	deleteBackupFile(w, r, filepath.Join(backupExportBase, "teams", teamID.String()), locale)
 }
 
 func (h *BackupRestoreHandler) handleTeamRestore(w http.ResponseWriter, r *http.Request) {
@@ -775,6 +835,55 @@ func (h *BackupRestoreHandler) handleTeamRestore(w http.ResponseWriter, r *http.
 }
 
 // ---------- Helpers ----------
+
+func serveBackupFile(w http.ResponseWriter, r *http.Request, dir, locale string) {
+	filename := r.PathValue("filename")
+	if filename == "" || strings.Contains(filename, "/") || strings.Contains(filename, "..") {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": i18n.T(locale, i18n.MsgInvalidFilename)})
+		return
+	}
+	path := filepath.Join(dir, filename)
+	if !strings.HasPrefix(path, dir+string(filepath.Separator)) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": i18n.T(locale, i18n.MsgInvalidPath)})
+		return
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": i18n.T(locale, i18n.MsgFileNotFound)})
+		return
+	}
+	defer f.Close()
+	fi, _ := f.Stat()
+	w.Header().Set("Content-Type", "application/gzip")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+	if fi != nil {
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", fi.Size()))
+	}
+	io.Copy(w, f)
+}
+
+func deleteBackupFile(w http.ResponseWriter, r *http.Request, dir, locale string) {
+	filename := r.PathValue("filename")
+	if filename == "" || strings.Contains(filename, "/") || strings.Contains(filename, "..") {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": i18n.T(locale, i18n.MsgInvalidFilename)})
+		return
+	}
+	path := filepath.Join(dir, filename)
+	if !strings.HasPrefix(path, dir+string(filepath.Separator)) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": i18n.T(locale, i18n.MsgInvalidPath)})
+		return
+	}
+	if err := os.Remove(path); err != nil {
+		if os.IsNotExist(err) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": i18n.T(locale, i18n.MsgFileNotFound)})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": i18n.T(locale, i18n.MsgInternalError, "failed to delete backup")})
+		return
+	}
+	slog.Info("backup deleted", "file", filename)
+	writeJSON(w, http.StatusOK, map[string]string{"deleted": filename})
+}
 
 func writeTarJSON(tw *tar.Writer, name string, v any) error {
 	data, err := json.MarshalIndent(v, "", "  ")

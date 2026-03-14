@@ -275,6 +275,14 @@
     "confirmButton": "确认恢复",
     "restoring": "正在恢复...",
     "restored": "恢复成功",
-    "failed": "恢复失败"
+    "failed": "恢复失败",
+    "deleted": "备份已删除",
+    "deleteFailed": "删除备份失败",
+    "deleteTitle": "删除备份？",
+    "deleteDescription": "删除「{{filename}}」？此操作无法撤销。",
+    "deleteConfirm": "删除",
+    "limitTitle": "已达备份上限",
+    "limitDescription": "最多允许 {{max}} 个备份。最旧的备份「{{oldest}}」将被删除以腾出空间。",
+    "limitConfirm": "删除最旧并创建"
   }
 }

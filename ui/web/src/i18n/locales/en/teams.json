@@ -275,6 +275,14 @@
     "confirmButton": "Yes, Restore",
     "restoring": "Restoring...",
     "restored": "Restored successfully",
-    "failed": "Restore failed"
+    "failed": "Restore failed",
+    "deleted": "Backup deleted",
+    "deleteFailed": "Failed to delete backup",
+    "deleteTitle": "Delete Backup?",
+    "deleteDescription": "Delete \"{{filename}}\"? This action cannot be undone.",
+    "deleteConfirm": "Delete",
+    "limitTitle": "Backup Limit Reached",
+    "limitDescription": "Maximum {{max}} backups allowed. The oldest backup \"{{oldest}}\" will be deleted to make room.",
+    "limitConfirm": "Delete Oldest & Create"
   }
 }
