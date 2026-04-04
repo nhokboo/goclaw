@@ -268,15 +268,6 @@ export function BrowserRuntimeSection({ data, onSave, saving }: Props) {
                   min={0}
                 />
               </div>
-              <div className="grid gap-1.5">
-                <InfoLabel tip={t("tools.browserProxyUrlTip")}>{t("tools.browserProxyUrl")}</InfoLabel>
-                <Input
-                  value={browser.proxy_url ?? ""}
-                  onChange={(e) => updateBrowser({ proxy_url: e.target.value })}
-                  placeholder="socks5://host:port"
-                  className="font-mono text-base md:text-xs"
-                />
-              </div>
             </div>
           </div>
         )}
@@ -411,15 +402,6 @@ export function BrowserRuntimeSection({ data, onSave, saving }: Props) {
                     onChange={(e) => updateBrowser({ k8s_pool: Number(e.target.value) || undefined })}
                     placeholder="0"
                     min={0}
-                  />
-                </div>
-                <div className="grid gap-1.5">
-                  <InfoLabel tip={t("tools.browserProxyUrlTip")}>{t("tools.browserProxyUrl")}</InfoLabel>
-                  <Input
-                    value={browser.proxy_url ?? ""}
-                    onChange={(e) => updateBrowser({ proxy_url: e.target.value })}
-                    placeholder="socks5://host:port"
-                    className="font-mono text-base md:text-xs"
                   />
                 </div>
               </div>
@@ -565,17 +547,6 @@ export function BrowserRuntimeSection({ data, onSave, saving }: Props) {
               min={240}
             />
           </div>
-          {resolvedMode !== "docker" && resolvedMode !== "k8s" && (
-            <div className="grid gap-1.5">
-              <InfoLabel tip={t("tools.browserProxyUrlTip")}>{t("tools.browserProxyUrl")}</InfoLabel>
-              <Input
-                value={browser.proxy_url ?? ""}
-                onChange={(e) => updateBrowser({ proxy_url: e.target.value })}
-                placeholder="socks5://host:port"
-                className="font-mono text-base md:text-xs"
-              />
-            </div>
-          )}
         </div>
 
         <div className="flex items-center gap-2">

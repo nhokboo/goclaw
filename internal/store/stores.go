@@ -32,8 +32,9 @@ type Stores struct {
 	BuiltinToolTenantCfgs  BuiltinToolTenantConfigStore
 	SkillTenantCfgs        SkillTenantConfigStore
 	SystemConfigs          SystemConfigStore
-	BrowserProxies         BrowserProxyStore
-	BrowserExtensions      BrowserExtensionStore
-	ScreencastSessions     ScreencastSessionStore
-	BrowserAudit           BrowserAuditStore
+	BrowserProxies            BrowserProxyStore
+	BrowserProxyAssignments   BrowserProxyAssignmentStore
+	BrowserExtensions         BrowserExtensionStore
+	ScreencastSessions        ScreencastSessionStore
+	BrowserAudit              BrowserAuditStore
 }

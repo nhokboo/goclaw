@@ -20,6 +20,8 @@ type ContainerPoolEngine struct {
 	engines  map[string]*poolEntry // profileKey → entry
 	copts    []ContainerOpt        // passed to child ContainerEngines
 	proxyURL string
+	proxyMgr *ProxyManager // optional: assigns per-container proxy from pool
+	tenantID string        // tenant for proxy assignment
 	logger   *slog.Logger
 	launched bool
 }
@@ -30,6 +32,7 @@ type poolEntry struct {
 	lastUsed time.Time
 	ready    chan struct{} // closed when launch completes
 	err      error        // set if launch failed
+	hasProxy bool         // true if container was launched with a proxy
 }
 
 // NewContainerPoolEngine creates a pool engine that manages up to maxPool containers.
@@ -90,7 +93,10 @@ func (p *ContainerPoolEngine) NewPage(ctx context.Context, url string) (Page, er
 		key = "_shared"
 	}
 
-	entry, err := p.getOrCreate(key, profileDir)
+	useProxy, _ := useProxyFromCtx(ctx)
+	p.logger.Info("container pool NewPage",
+		"key", key, "useProxy", useProxy, "proxyMgrWired", p.proxyMgr != nil)
+	entry, err := p.getOrCreate(key, profileDir, useProxy)
 	if err != nil {
 		return nil, fmt.Errorf("container pool: get engine for %q: %w", key, err)
 	}
@@ -182,11 +188,11 @@ func (v *poolTenantView) Name() string                           { return v.pool
 func (p *ContainerPoolEngine) Name() string { return "container-pool" }
 
 // getOrCreate returns an existing pool entry or creates a new container.
-func (p *ContainerPoolEngine) getOrCreate(key, profileDir string) (*poolEntry, error) {
-	return p.getOrCreateRetry(key, profileDir, 2)
+func (p *ContainerPoolEngine) getOrCreate(key, profileDir string, useProxy bool) (*poolEntry, error) {
+	return p.getOrCreateRetry(key, profileDir, useProxy, 2)
 }
 
-func (p *ContainerPoolEngine) getOrCreateRetry(key, profileDir string, retries int) (*poolEntry, error) {
+func (p *ContainerPoolEngine) getOrCreateRetry(key, profileDir string, useProxy bool, retries int) (*poolEntry, error) {
 	p.mu.Lock()
 
 	// Check existing entry
@@ -204,10 +210,22 @@ func (p *ContainerPoolEngine) getOrCreateRetry(key, profileDir string, retries i
 				delete(p.engines, key)
 			}
 			p.mu.Unlock()
-			return p.getOrCreateRetry(key, profileDir, retries-1)
+			return p.getOrCreateRetry(key, profileDir, useProxy, retries-1)
 		}
 		// Check if container is still alive
 		if entry.engine.IsConnected() {
+			// If agent wants proxy but container was launched without one,
+			// evict and recreate with proxy. Chrome --proxy-server is launch-time only.
+			if useProxy && !entry.hasProxy {
+				p.logger.Info("container pool: evicting non-proxy container for proxy re-launch", "key", key)
+				entry.engine.Close()
+				p.mu.Lock()
+				if p.engines[key] == entry {
+					delete(p.engines, key)
+				}
+				p.mu.Unlock()
+				return p.getOrCreateRetry(key, profileDir, useProxy, retries-1)
+			}
 			p.mu.Lock()
 			entry.lastUsed = time.Now()
 			p.mu.Unlock()
@@ -223,7 +241,7 @@ func (p *ContainerPoolEngine) getOrCreateRetry(key, profileDir string, retries i
 			delete(p.engines, key)
 		}
 		p.mu.Unlock()
-		return p.getOrCreateRetry(key, profileDir, retries-1)
+		return p.getOrCreateRetry(key, profileDir, useProxy, retries-1)
 	}
 
 	// Evict if at capacity
@@ -239,13 +257,38 @@ func (p *ContainerPoolEngine) getOrCreateRetry(key, profileDir string, retries i
 	}
 	p.engines[key] = entry
 	proxyURL := p.proxyURL
+	pm := p.proxyMgr
+	tid := p.tenantID
 	p.mu.Unlock()
+
+	// Assign proxy from pool (sticky per-profile) if ProxyManager is available
+	// and the agent has opted in via use_proxy config. Default is no proxy.
+	var proxyName string
+	if pm != nil && useProxy {
+		proxy, err := pm.AssignForProfile(context.Background(), tid, profileDir, "")
+		if err == nil {
+			if fmtURL, fmtErr := pm.FormatURL(proxy); fmtErr == nil {
+				proxyURL = fmtURL
+				proxyName = proxy.Name
+				p.logger.Info("proxy pool: assigned proxy for container",
+					"key", key, "proxy", proxyName, "tenant", tid)
+			} else {
+				p.logger.Warn("proxy pool: format URL failed, falling back to static proxy", "error", fmtErr)
+			}
+		} else {
+			p.logger.Warn("proxy pool: no healthy proxy available, falling back to static proxy",
+				"error", err, "tenant", tid, "profileDir", profileDir)
+		}
+	} else if useProxy && pm == nil {
+		p.logger.Warn("proxy pool: useProxy=true but ProxyManager not wired")
+	}
 
 	// Launch container (outside lock)
 	err := entry.engine.Launch(LaunchOpts{
 		ProfileDir: profileDir,
 		ProxyURL:   proxyURL,
 	})
+	entry.hasProxy = proxyURL != ""
 	entry.err = err
 	close(entry.ready)
 
@@ -259,7 +302,11 @@ func (p *ContainerPoolEngine) getOrCreateRetry(key, profileDir string, retries i
 		return nil, err
 	}
 
-	p.logger.Info("pool container created", "key", key, "profileDir", profileDir, "pool_size", p.poolSize())
+	logAttrs := []any{"key", key, "profileDir", profileDir, "pool_size", p.poolSize()}
+	if proxyName != "" {
+		logAttrs = append(logAttrs, "proxy", proxyName)
+	}
+	p.logger.Info("pool container created", logAttrs...)
 	return entry, nil
 }
 

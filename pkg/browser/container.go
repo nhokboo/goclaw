@@ -226,9 +226,16 @@ func (e *ContainerEngine) Launch(opts LaunchOpts) error {
 		args = append(args, "--proxy-server="+opts.ProxyURL)
 	}
 
-	// Start container
+	// Start container (redact proxy credentials from log)
 	cmd := exec.Command("docker", args...)
-	e.logger.Info("docker run command", "cmd", "docker "+strings.Join(args, " "))
+	logArgs := make([]string, len(args))
+	copy(logArgs, args)
+	for i, a := range logArgs {
+		if strings.HasPrefix(a, "CHROME_PROXY=") || strings.HasPrefix(a, "--proxy-server=") {
+			logArgs[i] = "[PROXY_REDACTED]"
+		}
+	}
+	e.logger.Info("docker run command", "cmd", "docker "+strings.Join(logArgs, " "))
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("docker run: %w (%s)", err, strings.TrimSpace(string(out)))

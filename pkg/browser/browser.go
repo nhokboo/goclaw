@@ -28,7 +28,9 @@ type Manager struct {
 	headless      bool
 	remoteURL     string        // CDP endpoint for remote Chrome (sidecar)
 	binaryPath    string        // custom browser binary (e.g. Brave, Edge, Chromium)
-	proxyURL      string        // proxy server URL (http/https/socks5)
+	proxyURL       string        // proxy server URL (http/https/socks5)
+	activeProxyURL string        // proxy URL currently applied to running browser
+	proxyMgr       *ProxyManager // optional: pool-based proxy for host mode
 	workspace     string        // root dir for profiles, screenshots, etc.
 	activeProfile string        // current Chrome profile name
 	actionTimeout time.Duration // per-action context timeout (default 30s)
@@ -165,38 +167,57 @@ func (m *Manager) Start(ctx context.Context) error {
 		return fmt.Errorf("browser manager is closed")
 	}
 
-	// If engine is connected, we're good
-	if m.engine.IsConnected() {
-		return nil
-	}
-
-	// Connection dead — clean up and reconnect
-	if len(m.pages) > 0 {
-		m.logger.Info("browser connection lost, reconnecting")
-		m.closeTenantEnginesLocked()
-		m.pages = make(map[string]Page)
-		m.console = make(map[string][]ConsoleMessage)
-		m.pageTenants = make(map[string]string)
-		m.pageAgents = make(map[string]string)
-		m.pageSessionKeys = make(map[string]string)
-		m.pageProfiles = make(map[string]string)
-		m.profileAgents = make(map[string]string)
-		m.profileSessions = make(map[string]string)
-		m.refs = NewRefStore()
-	}
-
 	profileDir := m.resolveProfileDir(ctx)
 	ctx = WithProfileDir(ctx, profileDir)
+
+	// Resolve proxy URL: static config first, then pool-based auto-assign for host mode.
+	// Only auto-assign from pool if the agent has opted in via use_proxy context flag.
+	proxyURL := m.proxyURL
+	if useProxy, ok := useProxyFromCtx(ctx); ok && useProxy && proxyURL == "" && m.proxyMgr != nil {
+		tenantID := tenantIDFromCtx(ctx)
+		if tenantID == "" {
+			tenantID = MasterTenantID
+		}
+		if proxy, err := m.proxyMgr.AssignForProfile(ctx, tenantID, profileDir, ""); err == nil {
+			if fmtURL, fmtErr := m.proxyMgr.FormatURL(proxy); fmtErr == nil {
+				proxyURL = fmtURL
+				m.logger.Info("host mode: auto-assigned proxy from pool", "proxy", proxy.Name)
+			}
+		}
+	}
+
+	// If engine is already connected, check if we need to restart for proxy change.
+	// Chrome --proxy-server is a launch-time flag — can't change on running process.
+	if m.engine.IsConnected() {
+		if proxyURL != "" && m.activeProxyURL != proxyURL {
+			m.logger.Info("host mode: proxy changed, restarting browser",
+				"old", m.activeProxyURL, "new", "[REDACTED]")
+			m.closeTenantEnginesLocked()
+			_ = m.engine.Close()
+			m.resetMapsLocked()
+			// Fall through to re-launch with new proxy
+		} else {
+			return nil
+		}
+	} else if len(m.pages) > 0 {
+		// Connection dead — clean up and reconnect
+		m.logger.Info("browser connection lost, reconnecting")
+		m.closeTenantEnginesLocked()
+		m.resetMapsLocked()
+	}
+
 	err := m.engine.Launch(LaunchOpts{
 		Headless:   m.headless,
 		ProfileDir: profileDir,
 		RemoteURL:  m.remoteURL,
 		BinaryPath: m.binaryPath,
-		ProxyURL:   m.proxyURL,
+		ProxyURL:   proxyURL,
 	})
 	if err != nil {
 		return err
 	}
+
+	m.activeProxyURL = proxyURL
 
 	// Start idle-page reaper if configured
 	if m.idleTimeout > 0 && m.stopReaper == nil {
@@ -232,6 +253,7 @@ func (m *Manager) shutdown(permanent bool) error {
 	m.closeTenantEnginesLocked()
 
 	err := m.engine.Close()
+	m.activeProxyURL = ""
 
 	// Reset engine for next Start()
 	if m.newEngine != nil {
@@ -239,6 +261,17 @@ func (m *Manager) shutdown(permanent bool) error {
 	} else {
 		m.engine = NewChromeEngine(m.logger)
 	}
+	m.resetMapsLocked()
+
+	// Allow restart unless this is a permanent Close()
+	if !permanent {
+		m.closed = false
+	}
+	return err
+}
+
+// resetMapsLocked clears all page/session/profile tracking maps. Must be called with mu held.
+func (m *Manager) resetMapsLocked() {
 	m.pages = make(map[string]Page)
 	m.console = make(map[string][]ConsoleMessage)
 	m.pageTenants = make(map[string]string)
@@ -248,12 +281,7 @@ func (m *Manager) shutdown(permanent bool) error {
 	m.pageProfiles = make(map[string]string)
 	m.profileAgents = make(map[string]string)
 	m.profileSessions = make(map[string]string)
-
-	// Allow restart unless this is a permanent Close()
-	if !permanent {
-		m.closed = false
-	}
-	return err
+	m.refs = NewRefStore()
 }
 
 // closeTenantEnginesLocked closes all incognito engine contexts. Must be called with mu held.
@@ -363,4 +391,19 @@ func (m *Manager) Refs() *RefStore {
 // ViewportSize returns the configured default viewport dimensions.
 func (m *Manager) ViewportSize() (int, int) {
 	return m.viewportWidth, m.viewportHeight
+}
+
+// SetProxyManager wires a ProxyManager for proxy pool rotation.
+// For ContainerPoolEngine: enables per-container proxy assignment.
+// For host mode (ChromeEngine): enables pool-based proxy at browser start.
+func (m *Manager) SetProxyManager(pm *ProxyManager, tenantID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.proxyMgr = pm
+	if pool, ok := m.engine.(*ContainerPoolEngine); ok {
+		pool.mu.Lock()
+		pool.proxyMgr = pm
+		pool.tenantID = tenantID
+		pool.mu.Unlock()
+	}
 }

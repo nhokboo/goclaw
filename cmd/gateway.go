@@ -137,7 +137,12 @@ func runGateway() {
 			if browserTool, ok := bt.(*browser.BrowserTool); ok {
 				encKey := os.Getenv("GOCLAW_ENCRYPTION_KEY")
 				if pgStores.BrowserProxies != nil {
-					browserTool.SetProxyManager(browser.NewProxyManager(pgStores.BrowserProxies, encKey, nil))
+					pm := browser.NewProxyManager(pgStores.BrowserProxies, encKey, nil)
+					if pgStores.BrowserProxyAssignments != nil {
+						pm.SetAssignmentStore(pgStores.BrowserProxyAssignments)
+					}
+					browserTool.SetProxyManager(pm)
+					browserMgr.SetProxyManager(pm, store.MasterTenantID.String())
 				}
 				if pgStores.BrowserExtensions != nil {
 					browserTool.SetExtensionManager(browser.NewExtensionManager(pgStores.BrowserExtensions, nil))
@@ -523,6 +528,16 @@ func runGateway() {
 				}
 			}
 		}
+	}
+
+	// Browser proxy pool management handler
+	if pgStores.BrowserProxies != nil {
+		encKey := os.Getenv("GOCLAW_ENCRYPTION_KEY")
+		httpProxyMgr := browser.NewProxyManager(pgStores.BrowserProxies, encKey, nil)
+		if pgStores.BrowserProxyAssignments != nil {
+			httpProxyMgr.SetAssignmentStore(pgStores.BrowserProxyAssignments)
+		}
+		server.SetBrowserProxiesHandler(httpapi.NewBrowserProxiesHandler(httpProxyMgr, nil))
 	}
 
 	// Seed + apply builtin tool disables

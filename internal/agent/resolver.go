@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/nextlevelbuilder/goclaw/internal/bootstrap"
@@ -389,6 +390,7 @@ func NewManagedResolver(deps ResolverDeps) ResolverFunc {
 			SkillNudgeInterval:     ag.ParseSkillNudgeInterval(),
 			WorkspaceSharing:       ag.ParseWorkspaceSharing(),
 			ShellDenyGroups:        ag.ParseShellDenyGroups(),
+			BrowserUseProxy:       ag.ParseBrowserUseProxy(),
 			ConfigPermStore:        deps.ConfigPermStore,
 			TeamStore:              deps.TeamStore,
 			SecureCLIStore:         deps.SecureCLIStore,
@@ -399,17 +401,24 @@ func NewManagedResolver(deps ResolverDeps) ResolverFunc {
 			MemoryStore:            deps.MemoryStore,
 		})
 
-		slog.Info("resolved agent from DB", "agent", agentKey, "model", ag.Model, "provider", ag.Provider)
+		slog.Info("resolved agent from DB", "agent", agentKey, "model", ag.Model, "provider", ag.Provider,
+			"browserUseProxy", ag.ParseBrowserUseProxy(), "otherConfigLen", len(ag.OtherConfig))
 		return loop, nil
 	}
 }
 
 // InvalidateAgent removes an agent from the router cache, forcing re-resolution.
 // Used when agent config is updated via API.
+// Scans all keys because cache keys are tenant-scoped ("tenantID:agentKey").
 func (r *Router) InvalidateAgent(agentKey string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	delete(r.agents, agentKey)
+	suffix := ":" + agentKey
+	for key := range r.agents {
+		if key == agentKey || strings.HasSuffix(key, suffix) {
+			delete(r.agents, key)
+		}
+	}
 	slog.Debug("invalidated agent cache", "agent", agentKey)
 }
 

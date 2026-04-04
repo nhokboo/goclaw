@@ -14,12 +14,7 @@ import (
 // Must be called with m.mu held. Only works when remoteURL is set.
 func (m *Manager) reconnectLocked() error {
 	m.closeTenantEnginesLocked()
-	m.pages = make(map[string]Page)
-	m.console = make(map[string][]ConsoleMessage)
-	m.pageTenants = make(map[string]string)
-	m.pageAgents = make(map[string]string)
-	m.pageLastUsed = make(map[string]time.Time)
-	m.refs = NewRefStore()
+	m.resetMapsLocked()
 
 	// Re-create engine and launch with remote URL
 	m.engine = NewChromeEngine(m.logger)

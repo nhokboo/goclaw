@@ -38,23 +38,29 @@ func (m *Manager) Type(ctx context.Context, targetID, ref, text string, opts Typ
 		return err
 	}
 
-	// Focus the element first
+	// Focus the element first (click may fail on non-interactive elements, that's OK)
 	_ = el.Click(proto.InputMouseButtonLeft, 1)
 	time.Sleep(50 * time.Millisecond)
 
 	if opts.Slowly {
 		// Type character by character with delay
 		for _, ch := range text {
-			_ = el.Input(string(ch))
+			if err := el.Input(string(ch)); err != nil {
+				return fmt.Errorf("type input: %w", err)
+			}
 			time.Sleep(50 * time.Millisecond)
 		}
 	} else {
-		_ = el.Input(text)
+		if err := el.Input(text); err != nil {
+			return fmt.Errorf("type input: %w", err)
+		}
 	}
 
 	if opts.Submit {
 		time.Sleep(50 * time.Millisecond)
-		_ = page.KeyboardPress(input.Enter)
+		if err := page.KeyboardPress(input.Enter); err != nil {
+			return fmt.Errorf("press Enter: %w", err)
+		}
 	}
 
 	return nil

@@ -91,13 +91,7 @@ Actions:
 - setOffline: Enable/disable offline mode (use targetId, offline)
 - startScreencast: Start streaming JPEG frames (use targetId, fps, quality)
 - stopScreencast: Stop screencast streaming (use targetId)
-- proxy.list: List configured proxies
-- proxy.add: Add a proxy (requires proxyUrl, proxyName; optional proxyGeo, proxyUsername, proxyPassword)
-- proxy.remove: Remove a proxy (requires proxyId)
-- proxy.health: Run health check on all proxies
 - extension.list: List registered extensions
-- extension.add: Add an extension (requires extensionName, extensionPath)
-- extension.remove: Remove an extension (requires extensionId)
 - audit.list: List browser audit log entries (optional auditAction, auditLimit)
 - storage.purge: Purge a browser profile session (requires profile)
 - storage.cleanup: Remove old profiles (requires maxAge in hours)
@@ -111,7 +105,9 @@ Act kinds: click, type, press, hover, wait, evaluate
 - wait: Wait for condition (request: {kind:"wait", timeMs:1000} or {kind:"wait", text:"loaded"})
 - evaluate: Run JavaScript (request: {kind:"evaluate", fn:"document.title"})
 
-Workflow: start → open URL → snapshot (get refs) → act (use refs) → snapshot again`
+Workflow: start → open URL → snapshot (get refs) → act (use refs) → snapshot again
+
+Note: If proxy is configured for this agent, it is applied automatically. You do not need to configure or select a proxy — just use the browser normally.`
 }
 
 func (t *BrowserTool) Parameters() map[string]any {
@@ -128,8 +124,7 @@ func (t *BrowserTool) Parameters() map[string]any {
 					"profiles", "deleteProfile", "errors",
 					"emulate", "pdf", "setHeaders", "setOffline",
 					"startScreencast", "stopScreencast",
-					"proxy.list", "proxy.add", "proxy.remove", "proxy.health",
-					"extension.list", "extension.add", "extension.remove",
+					"extension.list",
 					"audit.list",
 					"storage.purge", "storage.cleanup",
 					"liveview.create",
@@ -245,42 +240,6 @@ func (t *BrowserTool) Parameters() map[string]any {
 				"type":        "number",
 				"description": "JPEG quality for startScreencast (default 80)",
 			},
-			"proxyUrl": map[string]any{
-				"type":        "string",
-				"description": "Proxy URL for proxy.add (e.g. socks5://host:port)",
-			},
-			"proxyName": map[string]any{
-				"type":        "string",
-				"description": "Proxy name for proxy.add",
-			},
-			"proxyGeo": map[string]any{
-				"type":        "string",
-				"description": "Geo hint (country code) for proxy.add",
-			},
-			"proxyUsername": map[string]any{
-				"type":        "string",
-				"description": "Username for proxy.add",
-			},
-			"proxyPassword": map[string]any{
-				"type":        "string",
-				"description": "Password for proxy.add",
-			},
-			"proxyId": map[string]any{
-				"type":        "string",
-				"description": "Proxy ID for proxy.remove",
-			},
-			"extensionName": map[string]any{
-				"type":        "string",
-				"description": "Extension name for extension.add",
-			},
-			"extensionPath": map[string]any{
-				"type":        "string",
-				"description": "Filesystem path to unpacked extension for extension.add",
-			},
-			"extensionId": map[string]any{
-				"type":        "string",
-				"description": "Extension ID for extension.remove",
-			},
 			"auditAction": map[string]any{
 				"type":        "string",
 				"description": "Filter audit log by action name",
@@ -360,6 +319,16 @@ func (t *BrowserTool) Execute(ctx context.Context, args map[string]any) *tools.R
 	if sk := tools.ToolSessionKeyFromCtx(ctx); sk != "" {
 		ctx = WithSessionKey(ctx, sk)
 	}
+
+	// Propagate per-agent proxy opt-in to browser context (default false = no proxy).
+	useProxy := tools.BrowserUseProxyFromCtx(ctx)
+	if useProxy {
+		ctx = WithUseProxy(ctx, true)
+	}
+	t.manager.logger.Info("browser tool execute",
+		"action", action, "useProxy", useProxy,
+		"engine", t.manager.engine.Name(),
+		"proxyMgrWired", t.proxy != nil)
 
 	// Auto-start browser for actions that need it
 	switch action {
@@ -540,6 +509,9 @@ func (t *BrowserTool) handleOpen(ctx context.Context, args map[string]any) *tool
 	if url == "" {
 		return tools.ErrorResult("targetUrl is required for open action")
 	}
+	if err := ValidateBrowserURL(url); err != nil {
+		return tools.ErrorResult(fmt.Sprintf("open blocked: %v", err))
+	}
 
 	// Pass profile name via context so each open request routes to the correct container.
 	// Also update activeProfile as default for subsequent requests without explicit profile.
@@ -630,6 +602,9 @@ func (t *BrowserTool) handleNavigate(ctx context.Context, args map[string]any) *
 	url, _ := args["targetUrl"].(string)
 	if url == "" {
 		return tools.ErrorResult("targetUrl is required for navigate action")
+	}
+	if err := ValidateBrowserURL(url); err != nil {
+		return tools.ErrorResult(fmt.Sprintf("navigate blocked: %v", err))
 	}
 
 	if err := t.manager.Navigate(ctx, targetID, url); err != nil {

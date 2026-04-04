@@ -70,6 +70,20 @@ func profileNameFromCtx(ctx context.Context) string {
 	return ""
 }
 
+// browserUseProxyKey is a context key for per-agent proxy opt-in.
+type browserUseProxyKey struct{}
+
+// WithUseProxy returns a context with the browser use_proxy flag set.
+func WithUseProxy(ctx context.Context, use bool) context.Context {
+	return context.WithValue(ctx, browserUseProxyKey{}, use)
+}
+
+// useProxyFromCtx extracts the use_proxy flag from context. Returns true if set.
+func useProxyFromCtx(ctx context.Context) (bool, bool) {
+	v, ok := ctx.Value(browserUseProxyKey{}).(bool)
+	return v, ok
+}
+
 // browserProfileDirKey is a context key for passing profile directory to browser operations.
 type browserProfileDirKey struct{}
 

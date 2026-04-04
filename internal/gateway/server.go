@@ -505,6 +505,11 @@ func (s *Server) SetBrowserLiveHandler(h *httpapi.BrowserLiveHandler) {
 	s.handlers = append(s.handlers, h)
 }
 
+// SetBrowserProxiesHandler sets the browser proxy pool management handler.
+func (s *Server) SetBrowserProxiesHandler(h *httpapi.BrowserProxiesHandler) {
+	s.handlers = append(s.handlers, h)
+}
+
 // SetAgentStore sets the agent store for context injection in tools_invoke.
 func (s *Server) SetAgentStore(as store.AgentStore) { s.agentStore = as }
 

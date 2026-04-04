@@ -124,6 +124,9 @@ type Loop struct {
 	// Shell deny group overrides from agent other_config (nil = all defaults)
 	shellDenyGroups map[string]bool
 
+	// Browser: per-agent proxy opt-in (default false)
+	browserUseProxy bool
+
 	// Event callback for broadcasting agent events (run.started, chunk, tool.call, etc.)
 	onEvent func(event AgentEvent)
 
@@ -245,6 +248,9 @@ type LoopConfig struct {
 
 	// Shell deny group overrides (nil = all defaults)
 	ShellDenyGroups map[string]bool
+
+	// Browser: per-agent proxy opt-in (default false — agent must explicitly enable)
+	BrowserUseProxy bool
 
 	// Agent UUID + tenant for context propagation to tools
 	AgentUUID uuid.UUID
@@ -380,6 +386,7 @@ func NewLoop(cfg LoopConfig) *Loop {
 		sandboxContainerDir:    cfg.SandboxContainerDir,
 		sandboxWorkspaceAccess: cfg.SandboxWorkspaceAccess,
 		shellDenyGroups:        cfg.ShellDenyGroups,
+		browserUseProxy:       cfg.BrowserUseProxy,
 		traceCollector:         cfg.TraceCollector,
 		inputGuard:             guard,
 		injectionAction:        action,

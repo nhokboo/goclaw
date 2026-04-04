@@ -3,7 +3,6 @@ package browser
 import (
 	"context"
 	"fmt"
-	"time"
 )
 
 // --- Cookies ---
@@ -184,12 +183,7 @@ func (m *Manager) StartWithAttach(ctx context.Context, cdpURL string) error {
 	if m.engine.IsConnected() {
 		m.closeTenantEnginesLocked()
 		_ = m.engine.Close()
-		m.pages = make(map[string]Page)
-		m.console = make(map[string][]ConsoleMessage)
-		m.pageTenants = make(map[string]string)
-		m.pageAgents = make(map[string]string)
-		m.pageLastUsed = make(map[string]time.Time)
-		m.refs = NewRefStore()
+		m.resetMapsLocked()
 	}
 
 	m.engine = NewChromeEngine(m.logger)

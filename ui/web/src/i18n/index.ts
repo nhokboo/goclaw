@@ -36,6 +36,7 @@ import enCliCredentials from "./locales/en/cli-credentials.json";
 import enPackages from "./locales/en/packages.json";
 import enTenants from "./locales/en/tenants.json";
 import enBrowser from "./locales/en/browser.json";
+import enProxyPool from "./locales/en/proxy-pool.json";
 import enSystemSettings from "./locales/en/system-settings.json";
 
 // --- VI namespaces ---
@@ -73,6 +74,7 @@ import viCliCredentials from "./locales/vi/cli-credentials.json";
 import viPackages from "./locales/vi/packages.json";
 import viTenants from "./locales/vi/tenants.json";
 import viBrowser from "./locales/vi/browser.json";
+import viProxyPool from "./locales/vi/proxy-pool.json";
 import viSystemSettings from "./locales/vi/system-settings.json";
 
 // --- ZH namespaces ---
@@ -110,6 +112,7 @@ import zhCliCredentials from "./locales/zh/cli-credentials.json";
 import zhPackages from "./locales/zh/packages.json";
 import zhTenants from "./locales/zh/tenants.json";
 import zhBrowser from "./locales/zh/browser.json";
+import zhProxyPool from "./locales/zh/proxy-pool.json";
 import zhSystemSettings from "./locales/zh/system-settings.json";
 
 const STORAGE_KEY = "goclaw:language";
@@ -129,7 +132,7 @@ const ns = [
   "channels", "providers", "traces", "events",
   "usage", "approvals", "nodes", "logs", "tools", "mcp", "tts",
   "setup", "memory", "storage", "pending-messages", "contacts", "activity", "api-keys",
-  "cli-credentials", "packages", "tenants", "system-settings", "browser",
+  "cli-credentials", "packages", "tenants", "system-settings", "browser", "proxy-pool",
 ] as const;
 
 i18n.use(initReactI18next).init({
@@ -148,6 +151,7 @@ i18n.use(initReactI18next).init({
       packages: enPackages,
       tenants: enTenants,
       browser: enBrowser,
+      "proxy-pool": enProxyPool,
       "system-settings": enSystemSettings,
     },
     vi: {
@@ -164,6 +168,7 @@ i18n.use(initReactI18next).init({
       packages: viPackages,
       tenants: viTenants,
       browser: viBrowser,
+      "proxy-pool": viProxyPool,
       "system-settings": viSystemSettings,
     },
     zh: {
@@ -180,6 +185,7 @@ i18n.use(initReactI18next).init({
       packages: zhPackages,
       tenants: zhTenants,
       browser: zhBrowser,
+      "proxy-pool": zhProxyPool,
       "system-settings": zhSystemSettings,
     },
   },

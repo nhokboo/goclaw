@@ -35,6 +35,7 @@ export const ROUTES = {
   PENDING_MESSAGES: "/pending-messages",
   MEMORY: "/memory",
   KNOWLEDGE_GRAPH: "/knowledge-graph",
+  PROXY_POOL: "/proxy-pool",
   BROWSER: "/browser",
   BROWSER_DETAIL: "/browser/:targetId",
   BROWSER_SHARE: "/browser/live/:token",

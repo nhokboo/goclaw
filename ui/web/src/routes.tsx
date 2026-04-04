@@ -87,6 +87,9 @@ const KnowledgeGraphPage = lazyWithRetry(() =>
 const ContactsPage = lazyWithRetry(() =>
   import("@/pages/contacts/contacts-page").then((m) => ({ default: m.ContactsPage })),
 );
+const ProxyPoolPage = lazyWithRetry(() =>
+  import("@/pages/proxy-pool/proxy-pool-page").then((m) => ({ default: m.ProxyPoolPage })),
+);
 const BrowserPage = lazyWithRetry(() =>
   import("@/pages/browser/browser-page").then((m) => ({ default: m.BrowserPage })),
 );
@@ -195,6 +198,7 @@ export function AppRoutes() {
           <Route path={ROUTES.USAGE} element={<Navigate to={ROUTES.OVERVIEW} replace />} />
           <Route path={ROUTES.ACTIVITY} element={<ActivityPage />} />
           <Route path={ROUTES.CONTACTS} element={<ContactsPage />} />
+          <Route path={ROUTES.PROXY_POOL} element={<ProxyPoolPage />} />
           <Route path={ROUTES.BROWSER} element={<BrowserPage key="list" />} />
           <Route path={ROUTES.BROWSER_DETAIL} element={<BrowserPage key="detail" />} />
           <Route path={ROUTES.APPROVALS} element={<ApprovalsPage />} />

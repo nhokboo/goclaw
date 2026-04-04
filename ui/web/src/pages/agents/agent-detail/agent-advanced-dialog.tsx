@@ -12,7 +12,7 @@ import type {
 } from "@/types/agent";
 import {
   ChatGPTOAuthRoutingSection, ThinkingSection, WorkspaceSharingSection, CompactionSection,
-  ContextPruningSection, SandboxSection,
+  ContextPruningSection, SandboxSection, BrowserProxySection,
 } from "./config-sections";
 import { WorkspaceSection } from "./general-sections";
 import { useProviders } from "@/pages/providers/hooks/use-providers";
@@ -40,6 +40,7 @@ export function AgentAdvancedDialog({ open, onOpenChange, agent, onUpdate }: Age
     const otherObj = (a.other_config ?? {}) as Record<string, unknown>;
     const routing = normalizeChatGPTOAuthRouting(a.other_config);
     return {
+      browserUseProxy: otherObj.browser_use_proxy === true,
       thinkingLevel: typeof otherObj.thinking_level === "string" ? otherObj.thinking_level : "off",
       chatgptRouting: {
         override_mode: routing.isExplicit
@@ -61,6 +62,7 @@ export function AgentAdvancedDialog({ open, onOpenChange, agent, onUpdate }: Age
 
   const init = deriveState(agent);
   const [wsSharing, setWsSharing] = useState<WorkspaceSharingConfig>(init.wsSharing);
+  const [browserUseProxy, setBrowserUseProxy] = useState(init.browserUseProxy);
   const [thinkingLevel, setThinkingLevel] = useState(init.thinkingLevel);
   const [chatgptRouting, setChatgptRouting] = useState<ChatGPTOAuthRoutingConfig>(init.chatgptRouting);
   const [comp, setComp] = useState<CompactionConfig>(init.comp);
@@ -73,6 +75,7 @@ export function AgentAdvancedDialog({ open, onOpenChange, agent, onUpdate }: Age
   useEffect(() => {
     if (!open) return;
     const s = deriveState(agent);
+    setBrowserUseProxy(s.browserUseProxy);
     setThinkingLevel(s.thinkingLevel);
     setChatgptRouting(s.chatgptRouting);
     setWsSharing(s.wsSharing);
@@ -99,8 +102,12 @@ export function AgentAdvancedDialog({ open, onOpenChange, agent, onUpdate }: Age
       );
       delete otherBase.thinking_level;
       delete otherBase.workspace_sharing;
+      delete otherBase.browser_use_proxy;
       if (thinkingLevel && thinkingLevel !== "off") {
         otherBase.thinking_level = thinkingLevel;
+      }
+      if (browserUseProxy) {
+        otherBase.browser_use_proxy = true;
       }
       if (
         wsSharing.shared_dm || wsSharing.shared_group ||
@@ -139,6 +146,9 @@ export function AgentAdvancedDialog({ open, onOpenChange, agent, onUpdate }: Age
 
           {/* Workspace Sharing */}
           <WorkspaceSharingSection value={wsSharing} onChange={setWsSharing} />
+
+          {/* Browser Proxy */}
+          <BrowserProxySection value={browserUseProxy} onChange={setBrowserUseProxy} />
 
           {/* Thinking */}
           <ThinkingSection value={thinkingLevel} onChange={setThinkingLevel} />

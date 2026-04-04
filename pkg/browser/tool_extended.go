@@ -40,6 +40,10 @@ func (t *BrowserTool) handleAttach(ctx context.Context, args map[string]any) *to
 	if cdpURL == "" {
 		return tools.ErrorResult("cdpUrl is required for attach action")
 	}
+	// SSRF protection: block private/loopback addresses
+	if err := ValidateCDPURL(cdpURL); err != nil {
+		return tools.ErrorResult(fmt.Sprintf("attach blocked: %v", err))
+	}
 	if err := t.manager.StartWithAttach(ctx, cdpURL); err != nil {
 		return tools.ErrorResult(fmt.Sprintf("attach failed: %v", err))
 	}
@@ -330,6 +334,16 @@ func (t *BrowserTool) handleStopScreencast(ctx context.Context, args map[string]
 
 // --- Proxy handlers ---
 
+// safeProxy strips sensitive fields before returning proxy info to LLM.
+type safeProxy struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	URL       string `json:"url"`
+	Geo       string `json:"geo,omitempty"`
+	IsEnabled bool   `json:"isEnabled"`
+	IsHealthy bool   `json:"isHealthy"`
+}
+
 func (t *BrowserTool) handleProxyList(ctx context.Context) *tools.Result {
 	if t.proxy == nil {
 		return tools.ErrorResult("proxy management not configured")
@@ -338,7 +352,11 @@ func (t *BrowserTool) handleProxyList(ctx context.Context) *tools.Result {
 	if err != nil {
 		return tools.ErrorResult(fmt.Sprintf("proxy.list failed: %v", err))
 	}
-	return jsonResult(proxies)
+	safe := make([]safeProxy, len(proxies))
+	for i, p := range proxies {
+		safe[i] = safeProxy{ID: p.ID, Name: p.Name, URL: p.URL, Geo: p.Geo, IsEnabled: p.IsEnabled, IsHealthy: p.IsHealthy}
+	}
+	return jsonResult(safe)
 }
 
 func (t *BrowserTool) handleProxyAdd(ctx context.Context, args map[string]any) *tools.Result {
@@ -349,6 +367,9 @@ func (t *BrowserTool) handleProxyAdd(ctx context.Context, args map[string]any) *
 	proxyName, _ := args["proxyName"].(string)
 	if proxyURL == "" || proxyName == "" {
 		return tools.ErrorResult("proxyUrl and proxyName are required for proxy.add")
+	}
+	if err := ValidateProxyURL(proxyURL); err != nil {
+		return tools.ErrorResult(fmt.Sprintf("proxy.add blocked: %v", err))
 	}
 	p := &store.BrowserProxy{
 		Name: proxyName,
@@ -377,7 +398,7 @@ func (t *BrowserTool) handleProxyRemove(ctx context.Context, args map[string]any
 	if proxyID == "" {
 		return tools.ErrorResult("proxyId is required for proxy.remove")
 	}
-	if err := t.proxy.Remove(ctx, proxyID); err != nil {
+	if err := t.proxy.Remove(ctx, proxyID, tenantIDForDB(ctx)); err != nil {
 		return tools.ErrorResult(fmt.Sprintf("proxy.remove failed: %v", err))
 	}
 	return tools.NewResult("Proxy removed.")
@@ -414,6 +435,11 @@ func (t *BrowserTool) handleExtensionAdd(ctx context.Context, args map[string]an
 	path, _ := args["extensionPath"].(string)
 	if name == "" || path == "" {
 		return tools.ErrorResult("extensionName and extensionPath are required for extension.add")
+	}
+	// Path traversal protection: validate path within workspace
+	ws := tools.ToolWorkspaceFromCtx(ctx)
+	if err := ValidateExtensionPath(path, ws); err != nil {
+		return tools.ErrorResult(fmt.Sprintf("extension.add blocked: %v", err))
 	}
 	e := &store.BrowserExtension{
 		Name:    name,
