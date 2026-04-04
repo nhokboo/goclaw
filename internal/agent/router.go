@@ -119,7 +119,7 @@ func agentCacheKey(ctx context.Context, agentID string) string {
 }
 
 // Remove removes an agent from the router.
-// Scans all keys because cache keys may be tenant-scoped ("tenantID:agentKey").
+// Matches both plain and tenant-scoped keys (same as InvalidateAgent).
 func (r *Router) Remove(agentID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

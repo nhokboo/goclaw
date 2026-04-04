@@ -124,7 +124,7 @@ export function TraceDetailDialog({ traceId, onClose, getTrace, onNavigateTrace,
     useCallback(
       (payload: unknown) => {
         const event = payload as AgentEventPayload;
-        if (event?.type === "run.completed" || event?.type === "run.failed") {
+        if (event?.type === "run.completed" || event?.type === "run.failed" || event?.type === "run.cancelled") {
           fetchTrace();
         }
       },
@@ -383,6 +383,42 @@ function SpanTreeNode({ node, depth }: { node: SpanNode; depth: number }) {
                     (<span className="text-orange-400">{formatTokens(span.metadata!.thinking_tokens!)} {t("span.thinking")}</span>)
                   </span>
                 )}
+              </div>
+            )}
+            {span.metadata?.reasoning && (
+              <div className="text-xs text-muted-foreground">
+                <span>{t("span.reasoning")}</span>{" "}
+                {span.metadata.reasoning.requested_effort ? (
+                  <span>
+                    {t("span.requested")} {span.metadata.reasoning.requested_effort}
+                  </span>
+                ) : null}
+                {span.metadata.reasoning.source ? (
+                  <span className="ml-2">
+                    {t("span.source")} {t(`span.sourceValue.${span.metadata.reasoning.source}`)}
+                  </span>
+                ) : null}
+                {span.metadata.reasoning.effective_effort ? (
+                  <span className="ml-2">
+                    {t("span.effective")} {span.metadata.reasoning.effective_effort}
+                  </span>
+                ) : null}
+                {span.metadata.reasoning.fallback ? (
+                  <span className="ml-2">
+                    {t("span.fallback")} {span.metadata.reasoning.fallback}
+                  </span>
+                ) : null}
+                {span.metadata.reasoning.used_provider_default ? (
+                  <span className="ml-2">{t("span.modelDefault")}</span>
+                ) : null}
+                {span.metadata.reasoning.reason ? (
+                  <div className="mt-1">{span.metadata.reasoning.reason}</div>
+                ) : null}
+                {span.metadata.reasoning.supported_levels?.length ? (
+                  <div className="mt-1">
+                    {t("span.supportedLevels")} {span.metadata.reasoning.supported_levels.join(", ")}
+                  </div>
+                ) : null}
               </div>
             )}
             {span.input_preview && (

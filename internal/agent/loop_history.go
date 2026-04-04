@@ -543,22 +543,22 @@ func sanitizeHistory(msgs []providers.Message) ([]providers.Message, int) {
 func (l *Loop) maybeSummarize(ctx context.Context, sessionKey string) {
 	history := l.sessions.GetHistory(ctx, sessionKey)
 
-	// Use calibrated token estimation when available.
+	// Use calibrated token estimation, adjusted for overhead.
+	// lastPromptTokens includes everything (system prompt, tools, context files, history).
+	// We subtract estimated overhead so the threshold comparison is history-only.
 	lastPT, lastMC := l.sessions.GetLastPromptTokens(ctx, sessionKey)
-	tokenEstimate := EstimateTokensWithCalibration(history, lastPT, lastMC)
+	adjustedLastPT := max(lastPT-l.estimateOverhead(history, lastPT, lastMC), 0)
+	tokenEstimate := EstimateTokensWithCalibration(history, adjustedLastPT, lastMC)
 
-	// Resolve compaction thresholds from config with sensible defaults.
+	// Resolve compaction threshold from config: token-only (no message count guard).
+	// Industry standard — Claude Code, Anthropic API, LangChain all use token-based thresholds.
 	historyShare := config.DefaultHistoryShare
 	if l.compactionCfg != nil && l.compactionCfg.MaxHistoryShare > 0 {
 		historyShare = l.compactionCfg.MaxHistoryShare
 	}
-	minMessages := 200
-	if l.compactionCfg != nil && l.compactionCfg.MinMessages > 0 {
-		minMessages = l.compactionCfg.MinMessages
-	}
 
 	threshold := int(float64(l.contextWindow) * historyShare)
-	if len(history) <= minMessages && tokenEstimate <= threshold {
+	if tokenEstimate <= threshold {
 		return
 	}
 
@@ -617,14 +617,14 @@ func (l *Loop) maybeSummarize(ctx context.Context, sessionKey string) {
 		}
 
 		var prompt strings.Builder
-		prompt.WriteString("Provide a concise summary of this conversation, preserving key context:\n")
+		prompt.WriteString(compactionSummaryPrompt)
 		if len(mediaKinds) > 0 {
 			// Deduplicate and count media types for a compact note.
 			counts := make(map[string]int)
 			for _, k := range mediaKinds {
 				counts[k]++
 			}
-			prompt.WriteString("\nNote: user shared media files (")
+			prompt.WriteString("Note: user shared media files (")
 			first := true
 			for k, n := range counts {
 				if !first {
@@ -633,12 +633,12 @@ func (l *Loop) maybeSummarize(ctx context.Context, sessionKey string) {
 				prompt.WriteString(fmt.Sprintf("%d %s(s)", n, k))
 				first = false
 			}
-			prompt.WriteString(") which are no longer in context. Mention briefly if relevant.\n")
+			prompt.WriteString(") which are no longer in context. Mention briefly if relevant.\n\n")
 		}
 		if summary != "" {
-			prompt.WriteString("Existing context: " + summary + "\n")
+			prompt.WriteString("Existing context: " + summary + "\n\n")
 		}
-		prompt.WriteString("\n" + sb.String())
+		prompt.WriteString(sb.String())
 
 		resp, err := l.provider.Chat(sctx, providers.ChatRequest{
 			Messages: []providers.Message{{Role: "user", Content: prompt.String()}},
@@ -655,6 +655,28 @@ func (l *Loop) maybeSummarize(ctx context.Context, sessionKey string) {
 		l.sessions.IncrementCompaction(sctx, sessionKey)
 		l.sessions.Save(sctx, sessionKey)
 	}()
+}
+
+// estimateOverhead derives the non-history token overhead (system prompt + tool definitions +
+// context files) from calibration data. Used by maybeSummarize to compare history-only tokens
+// against the compaction threshold.
+func (l *Loop) estimateOverhead(history []providers.Message, lastPromptTokens, lastMsgCount int) int {
+	if lastPromptTokens <= 0 || lastMsgCount <= 0 {
+		// No calibration data — use conservative default (20% of context, capped at 40k).
+		fallback := min(int(float64(l.contextWindow)*0.2), 40000)
+		return fallback
+	}
+
+	// Overhead = total prompt tokens - estimated history tokens at calibration time.
+	count := min(lastMsgCount, len(history))
+	historyEstAtCalibration := EstimateHistoryTokens(history[:count])
+	overhead := max(lastPromptTokens-historyEstAtCalibration, 0)
+	// Clamp: overhead shouldn't exceed 40% of context window.
+	maxOverhead := int(float64(l.contextWindow) * 0.4)
+	if overhead > maxOverhead {
+		overhead = maxOverhead
+	}
+	return overhead
 }
 
 // buildGroupWriterPrompt builds the system prompt section for group file writer restrictions.

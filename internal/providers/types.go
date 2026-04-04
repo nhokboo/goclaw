@@ -84,6 +84,10 @@ type ChatResponse struct {
 	// RawAssistantContent preserves the raw content blocks array from the provider response.
 	// Used by Anthropic to pass thinking blocks back in tool use loops (required by API).
 	RawAssistantContent json.RawMessage `json:"-"`
+
+	// ThinkingSignature is the accumulated signature from streaming thinking blocks.
+	// Required by Anthropic API for tool use passback when thinking is enabled.
+	ThinkingSignature string `json:"-"`
 }
 
 // StreamChunk is a piece of a streaming response.
@@ -91,6 +95,13 @@ type StreamChunk struct {
 	Content  string `json:"content,omitempty"`
 	Thinking string `json:"thinking,omitempty"`
 	Done     bool   `json:"done,omitempty"`
+
+	// Tool call tracing (CLI provider only — tools executed externally via MCP).
+	ToolCallID  string         `json:"tool_call_id,omitempty"`
+	ToolName    string         `json:"tool_name,omitempty"`
+	ToolInput   map[string]any `json:"tool_input,omitempty"`
+	ToolResult  string         `json:"tool_result,omitempty"`   // set when tool_result block received
+	ToolIsError bool           `json:"tool_is_error,omitempty"` // tool returned error
 }
 
 // ImageContent represents a base64-encoded image for vision-capable models.

@@ -38,7 +38,14 @@ func (p *ClaudeCLIProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRes
 	disableTools := extractBoolOpt(req.Options, OptDisableTools)
 	bc := bridgeContextFromOpts(req.Options)
 	mcpPath := p.resolveMCPConfigPath(ctx, sessionKey, bc)
-	args := p.buildArgs(model, workDir, mcpPath, cliSessionID, "json", len(images) > 0, disableTools)
+	// Claude CLI >= v2.1.87 requires matching input/output formats.
+	// When images are present, buildArgs adds --input-format stream-json,
+	// so output format must also be stream-json.
+	outputFmt := "json"
+	if len(images) > 0 {
+		outputFmt = "stream-json"
+	}
+	args := p.buildArgs(model, workDir, mcpPath, cliSessionID, outputFmt, len(images) > 0, disableTools)
 
 	var stdin *bytes.Reader
 	if len(images) > 0 {
@@ -57,8 +64,27 @@ func (p *ClaudeCLIProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRes
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
-	slog.Debug("claude-cli exec", "cmd", fmt.Sprintf("%s %s", p.cliPath, strings.Join(args, " ")), "workdir", workDir)
+	fullCmd := fmt.Sprintf("%s %s", p.cliPath, strings.Join(args, " "))
+	slog.Debug("claude-cli exec", "cmd", fullCmd, "workdir", workDir)
 	output, err := cmd.Output()
+
+	// Debug log: write raw output + stderr for diagnosis
+	if os.Getenv("GOCLAW_DEBUG") == "1" {
+		debugPath := filepath.Join(workDir, "cli-debug.log")
+		if df, ferr := os.OpenFile(debugPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600); ferr == nil {
+			fmt.Fprintf(df, "=== CMD: %s\n=== WORKDIR: %s\n=== TIME: %s\n", fullCmd, workDir, time.Now().Format(time.RFC3339))
+			fmt.Fprintf(df, "=== OUTPUT (%d bytes):\n%s\n", len(output), output)
+			if stderr.Len() > 0 {
+				fmt.Fprintf(df, "=== STDERR:\n%s\n", stderr.String())
+			}
+			if err != nil {
+				fmt.Fprintf(df, "=== ERROR: %v\n", err)
+			}
+			fmt.Fprintln(df, "===")
+			df.Close()
+		}
+	}
+
 	if err != nil {
 		return nil, fmt.Errorf("claude-cli: %w (stderr: %s)", err, stderr.String())
 	}
@@ -165,13 +191,16 @@ func (p *ClaudeCLIProvider) ChatStream(ctx context.Context, req ChatRequest, onC
 			if ev.Message == nil {
 				continue
 			}
-			text, thinking := extractStreamContent(ev.Message)
+			text, thinking, toolChunks := extractStreamContentWithTools(ev.Message)
 			if text != "" {
 				contentBuf.WriteString(text)
 				onChunk(StreamChunk{Content: text})
 			}
 			if thinking != "" {
 				onChunk(StreamChunk{Thinking: thinking})
+			}
+			for _, tc := range toolChunks {
+				onChunk(tc)
 			}
 
 		case "result":

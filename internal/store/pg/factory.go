@@ -55,5 +55,6 @@ func NewPGStores(cfg store.StoreConfig) (*store.Stores, error) {
 		BrowserExtensions:       NewBrowserExtensionStore(db),
 		ScreencastSessions:      NewScreencastSessionStore(db),
 		BrowserAudit:            NewBrowserAuditStore(db),
+		SubagentTasks:         NewPGSubagentTaskStore(db),
 	}, nil
 }

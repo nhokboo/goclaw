@@ -37,4 +37,5 @@ type Stores struct {
 	BrowserExtensions         BrowserExtensionStore
 	ScreencastSessions        ScreencastSessionStore
 	BrowserAudit              BrowserAuditStore
+	SubagentTasks          SubagentTaskStore
 }

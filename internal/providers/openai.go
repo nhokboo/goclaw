@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,6 +28,16 @@ type OpenAIProvider struct {
 	providerType string // DB provider_type (e.g. "gemini_native", "openai", "minimax_native")
 	client       *http.Client
 	retryConfig  RetryConfig
+}
+
+// isOpenAINativeEndpoint returns true for endpoints confirmed to be native OpenAI
+// infrastructure that accepts the "developer" message role.
+// Azure OpenAI, proxies, and other OpenAI-compatible backends only support "system".
+// Matching OpenClaw TS: model-compat.ts → isOpenAINativeEndpoint().
+func isOpenAINativeEndpoint(apiBase string) bool {
+	// Extract hostname from the API base URL.
+	lower := strings.ToLower(apiBase)
+	return strings.Contains(lower, "api.openai.com")
 }
 
 func NewOpenAIProvider(name, apiKey, apiBase, defaultModel string) *OpenAIProvider {
@@ -269,14 +281,26 @@ func (p *OpenAIProvider) buildRequestBody(model string, req ChatRequest, stream 
 		inputMessages = collapseToolCallsWithoutSig(inputMessages)
 	}
 
+	// Detect native OpenAI endpoint to enable developer role.
+	// GPT-4o+ models prioritize "developer" messages over "system" for instruction
+	// adherence. Non-OpenAI backends (proxies, Qwen, DeepSeek, etc.) reject "developer".
+	// Matching OpenClaw TS: model-compat.ts → isOpenAINativeEndpoint().
+	useDevRole := isOpenAINativeEndpoint(p.apiBase)
+
 	// Convert messages to proper OpenAI wire format.
 	// This is necessary because our internal Message/ToolCall structs don't match
 	// the OpenAI API format (tool_calls need type+function wrapper, arguments as JSON string).
 	// Also omits empty content on assistant messages with tool_calls (Gemini compatibility).
 	msgs := make([]map[string]any, 0, len(inputMessages))
 	for _, m := range inputMessages {
+		role := m.Role
+		// Map "system" → "developer" for native OpenAI endpoints (GPT-4o+).
+		// The developer role has higher instruction priority than system role.
+		if useDevRole && role == "system" {
+			role = "developer"
+		}
 		msg := map[string]any{
-			"role": m.Role,
+			"role": role,
 		}
 
 		// Echo reasoning_content for assistant messages (required by Kimi, DeepSeek when thinking is enabled)
@@ -325,7 +349,7 @@ func (p *OpenAIProvider) buildRequestBody(model string, req ChatRequest, stream 
 					}
 				}
 				toolCalls[i] = map[string]any{
-					"id":       tc.ID,
+					"id":       truncateToolCallID(tc.ID),
 					"type":     "function",
 					"function": fn,
 				}
@@ -334,7 +358,7 @@ func (p *OpenAIProvider) buildRequestBody(model string, req ChatRequest, stream 
 		}
 
 		if m.ToolCallID != "" {
-			msg["tool_call_id"] = m.ToolCallID
+			msg["tool_call_id"] = truncateToolCallID(m.ToolCallID)
 		}
 
 		msgs = append(msgs, msg)
@@ -369,16 +393,20 @@ func (p *OpenAIProvider) buildRequestBody(model string, req ChatRequest, stream 
 	}
 
 	// Merge options
+	capabilityModel := modelFamily(model)
 	if v, ok := req.Options[OptMaxTokens]; ok {
-		if strings.HasPrefix(model, "gpt-5") || strings.HasPrefix(model, "o1") || strings.HasPrefix(model, "o3") || strings.HasPrefix(model, "o4") {
+		if strings.HasPrefix(capabilityModel, "gpt-5") || strings.HasPrefix(capabilityModel, "o1") || strings.HasPrefix(capabilityModel, "o3") || strings.HasPrefix(capabilityModel, "o4") {
 			body["max_completion_tokens"] = v
 		} else {
 			body["max_tokens"] = v
 		}
 	}
 	if v, ok := req.Options[OptTemperature]; ok {
-		// GPT-5 mini/nano and o-series models only support default temperature
-		skipTemp := strings.HasPrefix(model, "gpt-5-mini") || strings.HasPrefix(model, "gpt-5-nano") || strings.HasPrefix(model, "o1") || strings.HasPrefix(model, "o3") || strings.HasPrefix(model, "o4")
+		// Certain model families don't support custom temperature (locked to default).
+		// This is a model-level constraint, not provider-specific — applies to both OpenAI and Azure.
+		// Note: gpt-5.X flagship models (gpt-5.1, gpt-5.4) DO support temperature;
+		// only the mini/nano reasoning variants reject it.
+		skipTemp := strings.HasPrefix(capabilityModel, "gpt-5-mini") || strings.HasPrefix(capabilityModel, "gpt-5-nano") || strings.HasPrefix(capabilityModel, "o1") || strings.HasPrefix(capabilityModel, "o3") || strings.HasPrefix(capabilityModel, "o4")
 		if !skipTemp {
 			body["temperature"] = v
 		}
@@ -398,6 +426,15 @@ func (p *OpenAIProvider) buildRequestBody(model string, req ChatRequest, stream 
 	}
 
 	return body
+}
+
+// modelFamily strips provider prefixes (for example "openai/o3-mini") so capability
+// gates apply to the actual model family rather than the transport-specific wrapper.
+func modelFamily(model string) string {
+	if idx := strings.LastIndex(model, "/"); idx >= 0 && idx < len(model)-1 {
+		return model[idx+1:]
+	}
+	return model
 }
 
 func (p *OpenAIProvider) doRequest(ctx context.Context, body any) (io.ReadCloser, error) {
@@ -525,4 +562,21 @@ func clampedLimit(body map[string]any) any {
 		return v
 	}
 	return body["max_tokens"]
+}
+
+const maxToolCallIDLen = 40
+
+// truncateToolCallID deterministically fits tool call IDs into OpenAI's 40-char
+// limit. Prefix truncation can alias distinct legacy IDs that only diverge after
+// byte 40, so we hash the full original ID when shortening is needed.
+//
+// Fresh tool calls from the agent loop already go through uniquifyToolCallIDs
+// (which produces 40-char hashed IDs), so this is a no-op for those. This
+// function catches replayed/legacy history entries that bypassed uniquification.
+func truncateToolCallID(id string) string {
+	if len(id) <= maxToolCallIDLen {
+		return id
+	}
+	hash := sha256.Sum256([]byte(id))
+	return "call_" + hex.EncodeToString(hash[:])[:maxToolCallIDLen-len("call_")]
 }

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -111,7 +112,10 @@ func runGateway() {
 	// Bootstrap files live in Postgres.
 
 	// Detect server IPs for output scrubbing (prevents IP leaks via web_fetch, exec, etc.)
-	tools.DetectServerIPs(context.Background())
+	// Skip for desktop/lite — localhost-only, no multi-tenant exposure risk
+	if !edition.Current().IsLimited() {
+		tools.DetectServerIPs(context.Background())
+	}
 
 	toolsReg, execApprovalMgr, mcpMgr, sandboxMgr, browserMgr, webFetchTool, ttsTool, permPE, toolPE, dataDir, agentCfg := setupToolRegistry(cfg, workspace, providerRegistry)
 	if browserMgr != nil {
@@ -201,18 +205,18 @@ func runGateway() {
 					label = fmt.Sprintf("%d tasks", len(items))
 				}
 				batchMeta := map[string]string{
-					"origin_channel":      meta.OriginChannel,
-					"origin_peer_kind":    meta.OriginPeerKind,
-					"parent_agent":        meta.ParentAgent,
-					"subagent_label":      label,
-					"origin_trace_id":     meta.OriginTraceID,
-					"origin_root_span_id": meta.OriginRootSpanID,
+					tools.MetaOriginChannel:    meta.OriginChannel,
+					tools.MetaOriginPeerKind:   meta.OriginPeerKind,
+					tools.MetaParentAgent:      meta.ParentAgent,
+					tools.MetaSubagentLabel:    label,
+					tools.MetaOriginTraceID:    meta.OriginTraceID,
+					tools.MetaOriginRootSpanID: meta.OriginRootSpanID,
 				}
 				if meta.OriginLocalKey != "" {
-					batchMeta["origin_local_key"] = meta.OriginLocalKey
+					batchMeta[tools.MetaOriginLocalKey] = meta.OriginLocalKey
 				}
 				if meta.OriginSessionKey != "" {
-					batchMeta["origin_session_key"] = meta.OriginSessionKey
+					batchMeta[tools.MetaOriginSessionKey] = meta.OriginSessionKey
 				}
 				// Collect media from all items in the batch.
 				var batchMedia []bus.MediaFile
@@ -239,6 +243,9 @@ func runGateway() {
 			},
 		)
 		subagentMgr.SetAnnounceQueue(announceQueue)
+		if pgStores.SubagentTasks != nil {
+			subagentMgr.SetTaskStore(pgStores.SubagentTasks)
+		}
 
 		toolsReg.Register(tools.NewSpawnTool(subagentMgr, "default", 0))
 		slog.Info("subagent system enabled", "tools", []string{"spawn"})
@@ -348,6 +355,9 @@ func runGateway() {
 	server.SetPolicyEngine(permPE)
 	server.SetPairingService(pgStores.Pairing)
 	server.SetMessageBus(msgBus)
+	server.SetBuiltinToolStore(pgStores.BuiltinTools)
+	bridgeTraceReg := mcpbridge.NewBridgeTraceRegistry()
+	server.SetBridgeTraceRegistry(bridgeTraceReg)
 	server.SetOAuthHandler(httpapi.NewOAuthHandler(pgStores.Providers, pgStores.ConfigSecrets, providerRegistry, msgBus))
 
 	// contextFileInterceptor is created inside wireExtras.
@@ -363,7 +373,7 @@ func runGateway() {
 	var mcpPool *mcpbridge.Pool
 	var mediaStore *media.Store
 	var postTurn tools.PostTurnProcessor
-	contextFileInterceptor, mcpPool, mediaStore, postTurn = wireExtras(pgStores, agentRouter, providerRegistry, msgBus, pgStores.Sessions, toolsReg, toolPE, skillsLoader, hasMemory, traceCollector, workspace, cfg.Gateway.InjectionAction, cfg, sandboxMgr, redisClient)
+	contextFileInterceptor, mcpPool, mediaStore, postTurn = wireExtras(pgStores, agentRouter, providerRegistry, msgBus, pgStores.Sessions, toolsReg, toolPE, skillsLoader, hasMemory, traceCollector, workspace, cfg.Gateway.InjectionAction, cfg, sandboxMgr, redisClient, bridgeTraceReg)
 	if mcpPool != nil {
 		defer mcpPool.Stop()
 	}
@@ -599,7 +609,7 @@ func runGateway() {
 		instanceLoader = channels.NewInstanceLoader(pgStores.ChannelInstances, pgStores.Agents, channelMgr, msgBus, pgStores.Pairing)
 		instanceLoader.SetProviderRegistry(providerRegistry)
 		instanceLoader.SetPendingCompactionConfig(cfg.Channels.PendingCompaction)
-		instanceLoader.RegisterFactory(channels.TypeTelegram, telegram.FactoryWithStores(pgStores.Agents, pgStores.ConfigPermissions, pgStores.Teams, pgStores.PendingMessages))
+		instanceLoader.RegisterFactory(channels.TypeTelegram, telegram.FactoryWithStores(pgStores.Agents, pgStores.ConfigPermissions, pgStores.Teams, pgStores.SubagentTasks, pgStores.PendingMessages))
 		instanceLoader.RegisterFactory(channels.TypeDiscord, discord.FactoryWithStores(pgStores.Agents, pgStores.ConfigPermissions, pgStores.PendingMessages))
 		instanceLoader.RegisterFactory(channels.TypeFeishu, feishu.FactoryWithPendingStore(pgStores.PendingMessages))
 		instanceLoader.RegisterFactory(channels.TypeZaloOA, zalo.Factory)
@@ -724,6 +734,7 @@ func runGateway() {
 					ChatID:   meta.ChatID,
 					AgentID:  meta.LeadAgent,
 					UserID:   meta.UserID,
+					PeerKind: meta.PeerKind,
 					Content:  leaderContent,
 					Metadata: map[string]string{"run_kind": tools.RunKindNotification},
 				})
@@ -872,6 +883,7 @@ func runGateway() {
 				ChatID:    payload.ChatID,
 				UserID:    payload.UserID,
 				LeadAgent: leadAgentKey,
+				PeerKind:  payload.PeerKind,
 			})
 		})
 		slog.Info("team progress notification subscriber registered")
@@ -913,7 +925,7 @@ func runGateway() {
 	defer sched.Stop()
 
 	// Start cron service with job handler (routes through scheduler's cron lane)
-	pgStores.Cron.SetOnJob(makeCronJobHandler(sched, msgBus, cfg, channelMgr, pgStores.Sessions))
+	pgStores.Cron.SetOnJob(makeCronJobHandler(sched, msgBus, cfg, channelMgr, pgStores.Sessions, pgStores.Agents))
 	pgStores.Cron.SetOnEvent(func(event store.CronEvent) {
 		server.BroadcastEvent(*protocol.NewEvent(protocol.EventCron, event))
 	})
@@ -923,12 +935,14 @@ func runGateway() {
 
 	// Start heartbeat ticker (routes through scheduler's cron lane)
 	heartbeatTicker := heartbeat.NewTicker(heartbeat.TickerConfig{
-		Store:    pgStores.Heartbeats,
-		Agents:   pgStores.Agents,
-		Sessions: pgStores.Sessions,
-		MsgBus:   msgBus,
-		Sched:    sched,
-		RunAgent: makeHeartbeatRunFn(sched),
+		Store:         pgStores.Heartbeats,
+		Agents:        pgStores.Agents,
+		Sessions:      pgStores.Sessions,
+		ProviderStore: pgStores.Providers,
+		ProviderReg:   providerRegistry,
+		MsgBus:        msgBus,
+		Sched:         sched,
+		RunAgent:      makeHeartbeatRunFn(sched),
 	})
 	heartbeatTicker.SetOnEvent(func(event store.HeartbeatEvent) {
 		server.BroadcastEvent(*protocol.NewEvent(protocol.EventHeartbeat, event))
@@ -993,7 +1007,7 @@ func runGateway() {
 		}
 
 		// Clear activity on terminal events
-		if agentEvent.Type == protocol.AgentEventRunCompleted || agentEvent.Type == protocol.AgentEventRunFailed {
+		if agentEvent.Type == protocol.AgentEventRunCompleted || agentEvent.Type == protocol.AgentEventRunFailed || agentEvent.Type == protocol.AgentEventRunCancelled {
 			if sessionKey := agentRouter.SessionKeyForRun(agentEvent.RunID); sessionKey != "" {
 				agentRouter.ClearActivity(sessionKey)
 			}
@@ -1095,6 +1109,11 @@ func runGateway() {
 		if !ok {
 			return
 		}
+		if pgStores.ConfigSecrets != nil {
+			if secrets, err := pgStores.ConfigSecrets.GetAll(context.Background()); err == nil && len(secrets) > 0 {
+				updatedCfg.ApplyDBSecrets(secrets)
+			}
+		}
 		newMgr := setupTTS(updatedCfg)
 		if newMgr == nil {
 			return
@@ -1162,6 +1181,21 @@ func runGateway() {
 		slog.Info("browser config reloaded", "mode", updatedCfg.Tools.Browser.Mode)
 	})
 
+	// Log orphaned providers on agent deletion. Auto-delete is unsafe because
+	// providers can be referenced by heartbeats (FK), OAuth tokens, media chains.
+	// Users should clean up orphaned providers manually via UI/API.
+	msgBus.Subscribe("agent-deleted-provider-log", func(evt bus.Event) {
+		if evt.Name != bus.TopicAgentDeleted {
+			return
+		}
+		payload, ok := evt.Payload.(bus.AgentDeletedPayload)
+		if !ok || payload.Provider == "" {
+			return
+		}
+		slog.Info("agent deleted, provider may be orphaned — verify via UI",
+			"agent", payload.AgentKey, "provider", payload.Provider)
+	})
+
 	// Contact collector: auto-collect user info from channels with in-memory dedup cache.
 	var contactCollector *store.ContactCollector
 	if pgStores.Contacts != nil {
@@ -1169,7 +1203,7 @@ func runGateway() {
 		channelMgr.SetContactCollector(contactCollector) // propagate to all channel handlers
 	}
 
-	go consumeInboundMessages(ctx, msgBus, agentRouter, cfg, sched, channelMgr, consumerTeamStore, quotaChecker, pgStores.Sessions, pgStores.Agents, contactCollector, postTurn)
+	go consumeInboundMessages(ctx, msgBus, agentRouter, cfg, sched, channelMgr, consumerTeamStore, quotaChecker, pgStores.Sessions, pgStores.Agents, contactCollector, postTurn, subagentMgr)
 
 	// Task recovery ticker: re-dispatches stale/pending team tasks on startup and periodically.
 	var taskTicker *tasks.TaskTicker
@@ -1206,6 +1240,12 @@ func runGateway() {
 			sandboxMgr.Stop()
 			slog.Info("releasing sandbox containers...")
 			sandboxMgr.ReleaseAll(context.Background())
+		}
+
+		if sched != nil {
+			slog.Info("gateway: draining active runs", "timeout", "5s")
+			sched.Stop() // MarkDraining + StopAll
+			time.Sleep(5 * time.Second)
 		}
 
 		cancel()
@@ -1245,8 +1285,10 @@ func runGateway() {
 	if strings.Contains(cfg.Database.PostgresDSN, ":goclaw@") {
 		slog.Warn("security.default_db_password: using default Postgres password — run ./prepare-env.sh to generate a strong one")
 	}
-	if len(cfg.Gateway.AllowedOrigins) == 0 {
-		slog.Warn("security.cors_open: no allowed_origins configured — all WebSocket origins accepted. Set gateway.allowed_origins for production")
+	if len(cfg.Gateway.AllowedOrigins) > 0 {
+		slog.Info("cors: allowed_origins configured", "origins", cfg.Gateway.AllowedOrigins)
+	} else if !edition.Current().IsLimited() {
+		slog.Warn("security.cors_open: no allowed_origins configured — all WebSocket origins accepted. Set gateway.allowed_origins or GOCLAW_ALLOWED_ORIGINS for production")
 	}
 
 	if err := server.Start(ctx); err != nil {
