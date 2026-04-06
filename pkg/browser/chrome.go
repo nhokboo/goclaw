@@ -18,6 +18,25 @@ import (
 	"github.com/ysmood/gson"
 )
 
+// blockedChromeFlags is the set of Chrome flags that agents are not allowed to set via
+// ExtraArgs. Allowing these would undermine security boundaries:
+//   - remote-debugging-address / remote-debugging-port: expose CDP externally
+//   - disable-web-security: bypasses CORS and SOP, enables SSRF via browser
+//   - user-data-dir: redirects profile to arbitrary OS paths (path traversal)
+//   - proxy-server: overrides the gateway-managed proxy, leaks traffic
+//   - remote-allow-origins: opens CDP to arbitrary origins
+//   - enable-automation / headless: fingerprinting control already managed by the engine
+var blockedChromeFlags = map[string]bool{
+	"remote-debugging-address": true,
+	"remote-debugging-port":    true,
+	"disable-web-security":     true,
+	"user-data-dir":            true,
+	"proxy-server":             true,
+	"remote-allow-origins":     true,
+	"enable-automation":        true,
+	"headless":                 true,
+}
+
 // ChromeEngine implements Engine using go-rod (Chrome DevTools Protocol).
 type ChromeEngine struct {
 	browser   *rod.Browser
@@ -83,13 +102,25 @@ func (e *ChromeEngine) Launch(opts LaunchOpts) error {
 			l.Set("window-size", fmt.Sprintf("%d,%d", opts.WindowWidth, opts.WindowHeight))
 		}
 
-		// Apply per-agent extra launch args
+		// Apply per-agent extra launch args.
+		// Blocked flags are skipped to prevent security bypass — agents must not be
+		// able to disable web security, expose the debug port publicly, or redirect
+		// Chrome's data directory to arbitrary system paths.
 		for _, arg := range opts.ExtraArgs {
 			parts := strings.SplitN(strings.TrimLeft(arg, "-"), "=", 2)
+			if len(parts) == 0 || parts[0] == "" {
+				continue
+			}
+			flagName := parts[0]
+			if blockedChromeFlags[flagName] {
+				e.logger.Warn("security.browser: blocked dangerous Chrome flag in ExtraArgs",
+					"flag", flagName)
+				continue
+			}
 			if len(parts) == 2 {
-				l.Set(flags.Flag(parts[0]), parts[1])
-			} else if len(parts) == 1 && parts[0] != "" {
-				l.Set(flags.Flag(parts[0]))
+				l.Set(flags.Flag(flagName), parts[1])
+			} else {
+				l.Set(flags.Flag(flagName))
 			}
 		}
 

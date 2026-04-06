@@ -166,8 +166,9 @@ func bridgeContextFromOpts(opts map[string]any) BridgeContext {
 		Channel:   extractStringOpt(opts, OptChannel),
 		ChatID:    extractStringOpt(opts, OptChatID),
 		PeerKind:  extractStringOpt(opts, OptPeerKind),
-		Workspace: extractStringOpt(opts, OptWorkspace),
-		TenantID:  extractStringOpt(opts, OptTenantID),
+		Workspace:     extractStringOpt(opts, OptWorkspace),
+		TeamWorkspace: extractStringOpt(opts, OptTeamWorkspace),
+		TenantID:      extractStringOpt(opts, OptTenantID),
 	}
 }
 

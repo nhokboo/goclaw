@@ -296,6 +296,11 @@ func bridgeContextMiddleware(gatewayToken string, agentStore store.AgentStore, b
 		if workspace != "" && (agentIDStr != "" || userID != "") {
 			ctx = tools.WithToolWorkspace(ctx, workspace)
 		}
+		// Inject team workspace so file tools can access the shared team directory
+		// during team task delegations (member agents need read/write access).
+		if teamWorkspace := r.Header.Get("X-Team-Workspace"); teamWorkspace != "" && (agentIDStr != "" || userID != "") {
+			ctx = tools.WithToolTeamWorkspace(ctx, teamWorkspace)
+		}
 
 		// Inject builtin tool settings so media tools (read_image, tts, etc.)
 		// can resolve their provider chains via ResolveMediaProviderChain.

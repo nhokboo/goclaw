@@ -276,7 +276,8 @@ func (l *Loop) runLoop(ctx context.Context, req RunRequest) (result *RunResult, 
 				providers.OptChannel:     req.Channel,
 				providers.OptChatID:      req.ChatID,
 				providers.OptPeerKind:    req.PeerKind,
-				providers.OptWorkspace:   tools.ToolWorkspaceFromCtx(ctx),
+				providers.OptWorkspace:      tools.ToolWorkspaceFromCtx(ctx),
+				providers.OptTeamWorkspace:  tools.ToolTeamWorkspaceFromCtx(ctx),
 			},
 		}
 		if tid := store.TenantIDFromContext(ctx); tid != uuid.Nil {

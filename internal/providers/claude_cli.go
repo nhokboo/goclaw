@@ -35,6 +35,10 @@ const OptPeerKind = "peer_kind"
 // OptWorkspace passes the agent workspace path so MCP bridge tools can resolve file paths.
 const OptWorkspace = "workspace"
 
+// OptTeamWorkspace passes the team shared workspace path so MCP bridge file tools
+// can access team files when the agent is executing a team task delegation.
+const OptTeamWorkspace = "team_workspace"
+
 // OptTenantID passes the tenant UUID string for per-session MCP config.
 // Required for memory indexing and tenant-scoped queries via bridge tools.
 const OptTenantID = "tenant_id"

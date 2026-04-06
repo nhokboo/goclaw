@@ -340,7 +340,16 @@ func (h *BrowserLiveHandler) handleScreencastWS(w http.ResponseWriter, r *http.R
 		}
 	}
 
-	// Upgrade with the token echoed back as selected subprotocol (required by spec).
+	// Upgrade with the token echoed back as selected subprotocol (required by WS spec).
+	//
+	// Security note: echoing the bearer token in Sec-WebSocket-Protocol is architecturally
+	// necessary. Browser WebSocket APIs cannot send custom headers (e.g. Authorization),
+	// so the token is passed as a subprotocol by the client. The server must echo the chosen
+	// subprotocol back or the browser rejects the handshake. The token is already known to
+	// the client (they sent it), so echoing it does not introduce new exposure. Reverse
+	// proxies may log this header — this is acceptable because the token appears in access
+	// logs only for this specific upgrade request, and the client itself supplied it.
+	// Changing this mechanism would break the existing auth flow for the chat panel.
 	upgrader := h.upgrader
 	upgrader.Subprotocols = []string{bearer}
 	conn, err := upgrader.Upgrade(w, r, nil)
@@ -640,15 +649,22 @@ func (h *BrowserLiveHandler) runScreencastLoop(conn *websocket.Conn, page browse
 			vkCode: input.VKCode,
 		}
 
-		// Mousemove: drop on backpressure. Everything else: always send.
+		// Mousemove: drop immediately on backpressure (high-frequency, stale events are useless).
+		// All other events (clicks, keys, scroll): use a short timeout rather than blocking
+		// indefinitely — a 500ms stale click is better dropped than blocking the WS read loop
+		// which would also stall screencast frame delivery.
 		droppable := ev.typ == "mousemove" || ev.typ == "mouseMoved"
 		if droppable {
 			select {
 			case inputCh <- ev:
-			default: // drop
+			default: // drop stale mousemove
 			}
 		} else {
-			inputCh <- ev
+			select {
+			case inputCh <- ev:
+			case <-time.After(500 * time.Millisecond):
+				// drop stale click/key rather than blocking the WS read loop
+			}
 		}
 	}
 

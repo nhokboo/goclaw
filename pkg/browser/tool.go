@@ -518,12 +518,12 @@ func (t *BrowserTool) handleOpen(ctx context.Context, args map[string]any) *tool
 	}
 
 	// Pass profile name via context so each open request routes to the correct container.
-	// Also update activeProfile as default for subsequent requests without explicit profile.
+	// We do NOT update manager.activeProfile here — that global field must not be mutated
+	// from tool execution because it is shared across all agents. Agent A setting a profile
+	// would silently make Agent B inherit it on the next request that omits an explicit
+	// profile, causing cross-agent data isolation violations.
 	if profile, ok := args["profile"].(string); ok && profile != "" {
 		ctx = WithProfileName(ctx, profile)
-		t.manager.mu.Lock()
-		t.manager.activeProfile = profile
-		t.manager.mu.Unlock()
 	}
 
 	// Optional viewport override — agent can request specific dimensions for testing

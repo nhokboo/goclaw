@@ -406,25 +406,36 @@ func (e *ContainerEngine) stopContainer() {
 	e.containerID = ""
 }
 
+// getInner returns the current inner Engine under the mutex.
+// Returns nil if the container engine is not running.
+func (e *ContainerEngine) getInner() Engine {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.inner
+}
+
 func (e *ContainerEngine) NewPage(ctx context.Context, url string) (Page, error) {
-	if e.inner == nil {
+	inner := e.getInner()
+	if inner == nil {
 		return nil, fmt.Errorf("container engine not running")
 	}
-	return e.inner.NewPage(ctx, url)
+	return inner.NewPage(ctx, url)
 }
 
 func (e *ContainerEngine) Pages() ([]Page, error) {
-	if e.inner == nil {
+	inner := e.getInner()
+	if inner == nil {
 		return nil, fmt.Errorf("container engine not running")
 	}
-	return e.inner.Pages()
+	return inner.Pages()
 }
 
 func (e *ContainerEngine) Incognito() (Engine, error) {
-	if e.inner == nil {
+	inner := e.getInner()
+	if inner == nil {
 		return nil, fmt.Errorf("container engine not running")
 	}
-	return e.inner.Incognito()
+	return inner.Incognito()
 }
 
 func (e *ContainerEngine) IsConnected() bool {

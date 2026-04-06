@@ -77,6 +77,8 @@ func ValidateCDPURL(raw string) error {
 
 // ValidateBrowserURL checks that a URL is safe for the browser to navigate to.
 // Only allows http:// and https:// schemes (and about:blank).
+// Performs SSRF protection by resolving the hostname and blocking private/loopback IPs,
+// cloud metadata endpoints, and internal hostnames.
 func ValidateBrowserURL(raw string) error {
 	if raw == "" {
 		return fmt.Errorf("URL is empty")
@@ -87,7 +89,7 @@ func ValidateBrowserURL(raw string) error {
 	}
 	switch u.Scheme {
 	case "http", "https":
-		return nil
+		// fall through to host checks below
 	case "about":
 		if u.Opaque == "blank" || u.Path == "blank" {
 			return nil
@@ -96,6 +98,43 @@ func ValidateBrowserURL(raw string) error {
 	default:
 		return fmt.Errorf("URL scheme %q not allowed (use http:// or https://)", u.Scheme)
 	}
+
+	// SSRF protection: block well-known metadata endpoints and internal hostnames
+	// regardless of how they resolve (name-based block is fast and unambiguous).
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("URL missing host")
+	}
+	// Block cloud metadata IPs/hostnames directly (no DNS needed).
+	switch host {
+	case "169.254.169.254",        // AWS/Azure/GCP link-local metadata
+		"metadata.google.internal", // GCP metadata
+		"metadata.internal":        // generic internal metadata alias
+		return fmt.Errorf("SSRF blocked: %q is a cloud metadata endpoint", host)
+	}
+	if strings.HasSuffix(host, ".internal") || strings.HasSuffix(host, ".local") || host == "localhost" {
+		return fmt.Errorf("SSRF blocked: cannot navigate to local/internal hostname %q", host)
+	}
+
+	// Check IP literals
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+			return fmt.Errorf("SSRF blocked: cannot navigate to private/loopback address %s", host)
+		}
+		return nil
+	}
+
+	// Resolve hostname and verify all returned IPs are public
+	ips, resolveErr := net.LookupHost(host)
+	if resolveErr == nil {
+		for _, resolved := range ips {
+			rIP := net.ParseIP(resolved)
+			if rIP != nil && (rIP.IsLoopback() || rIP.IsPrivate() || rIP.IsLinkLocalUnicast()) {
+				return fmt.Errorf("SSRF blocked: %s resolves to private address %s", host, resolved)
+			}
+		}
+	}
+	return nil
 }
 
 // ValidateExtensionPath checks that an extension path is within the allowed workspace.
