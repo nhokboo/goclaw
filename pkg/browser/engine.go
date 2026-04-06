@@ -112,6 +112,9 @@ type LaunchOpts struct {
 	ProxyUser      string   // proxy auth username (used via CDP Fetch domain)
 	ProxyPass      string   // proxy auth password (decrypted, used via CDP Fetch domain)
 	ExtensionPaths []string // --load-extension paths for Chrome extensions
+	ExtraArgs      []string // additional Chrome command-line flags (per-agent)
+	WindowWidth    int      // initial window width (0 = default 1920)
+	WindowHeight   int      // initial window height (0 = default 1080)
 }
 
 // ScreencastFrame is a single frame from CDP Page.screencastFrame.

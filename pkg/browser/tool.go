@@ -66,7 +66,7 @@ Actions:
 - start: Launch the browser engine
 - stop: Close the browser engine and all tabs
 - tabs: List open tabs
-- open: Open a new tab (requires targetUrl; optional profile for Chrome profile dir)
+- open: Open a new tab (requires targetUrl; optional profile for Chrome profile dir, width/height for custom viewport size e.g. width=375 height=812 for mobile testing)
 - close: Close a tab (requires targetId)
 - focusTab: Activate/focus a tab (requires targetId)
 - snapshot: Get page accessibility tree with element refs (use targetId, maxChars, interactive, compact, depth, includeFrames, frameId)
@@ -202,11 +202,11 @@ func (t *BrowserTool) Parameters() map[string]any {
 			},
 			"width": map[string]any{
 				"type":        "number",
-				"description": "Viewport width for emulate action",
+				"description": "Viewport width for open (custom viewport) or emulate action",
 			},
 			"height": map[string]any{
 				"type":        "number",
-				"description": "Viewport height for emulate action",
+				"description": "Viewport height for open (custom viewport) or emulate action",
 			},
 			"scale": map[string]any{
 				"type":        "number",
@@ -324,6 +324,10 @@ func (t *BrowserTool) Execute(ctx context.Context, args map[string]any) *tools.R
 	useProxy := tools.BrowserUseProxyFromCtx(ctx)
 	if useProxy {
 		ctx = WithUseProxy(ctx, true)
+	}
+	// Propagate per-agent browser opts (launch args, window size).
+	if opts := tools.BrowserOptsFromCtx(ctx); opts != nil {
+		ctx = WithBrowserOpts(ctx, opts)
 	}
 	t.manager.logger.Info("browser tool execute",
 		"action", action, "useProxy", useProxy,
@@ -520,6 +524,15 @@ func (t *BrowserTool) handleOpen(ctx context.Context, args map[string]any) *tool
 		t.manager.mu.Lock()
 		t.manager.activeProfile = profile
 		t.manager.mu.Unlock()
+	}
+
+	// Optional viewport override — agent can request specific dimensions for testing
+	if w, ok := args["width"].(float64); ok && w > 0 {
+		h, _ := args["height"].(float64)
+		if h <= 0 {
+			h = w * 9 / 16 // default 16:9 aspect ratio
+		}
+		ctx = WithViewportOverride(ctx, int(w), int(h))
 	}
 
 	tab, err := t.manager.OpenTab(ctx, url)

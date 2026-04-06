@@ -136,6 +136,7 @@ type Loop struct {
 
 	// Browser: per-agent proxy opt-in (default false)
 	browserUseProxy bool
+	browserOpts     *store.BrowserOpts
 
 	// Event callback for broadcasting agent events (run.started, chunk, tool.call, etc.)
 	onEvent func(event AgentEvent)
@@ -261,6 +262,7 @@ type LoopConfig struct {
 
 	// Browser: per-agent proxy opt-in (default false — agent must explicitly enable)
 	BrowserUseProxy bool
+	BrowserOpts     *store.BrowserOpts
 
 	// Agent UUID + tenant for context propagation to tools
 	AgentUUID uuid.UUID
@@ -405,6 +407,7 @@ func NewLoop(cfg LoopConfig) *Loop {
 		sandboxWorkspaceAccess: cfg.SandboxWorkspaceAccess,
 		shellDenyGroups:        cfg.ShellDenyGroups,
 		browserUseProxy:       cfg.BrowserUseProxy,
+		browserOpts:           cfg.BrowserOpts,
 		traceCollector:         cfg.TraceCollector,
 		inputGuard:             guard,
 		injectionAction:        action,

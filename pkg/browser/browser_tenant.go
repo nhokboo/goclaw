@@ -1,6 +1,10 @@
 package browser
 
-import "context"
+import (
+	"context"
+
+	"github.com/nextlevelbuilder/goclaw/internal/store"
+)
 
 // browserTenantKey is a context key for passing tenant ID to browser operations.
 type browserTenantKey struct{}
@@ -122,4 +126,41 @@ func profileDirFromCtx(ctx context.Context) string {
 		return v
 	}
 	return ""
+}
+
+// browserOptsKey is a context key for per-agent browser options.
+type browserOptsKey struct{}
+
+// WithBrowserOpts returns a context with per-agent browser options set.
+func WithBrowserOpts(ctx context.Context, opts *store.BrowserOpts) context.Context {
+	return context.WithValue(ctx, browserOptsKey{}, opts)
+}
+
+// browserOptsFromCtx extracts per-agent browser options from context.
+func browserOptsFromCtx(ctx context.Context) *store.BrowserOpts {
+	if v, ok := ctx.Value(browserOptsKey{}).(*store.BrowserOpts); ok {
+		return v
+	}
+	return nil
+}
+
+// viewportOverride holds optional viewport dimensions passed via tool args.
+type viewportOverride struct {
+	Width  int
+	Height int
+}
+
+type viewportOverrideKey struct{}
+
+// WithViewportOverride returns a context with viewport dimensions to apply on new pages.
+func WithViewportOverride(ctx context.Context, width, height int) context.Context {
+	return context.WithValue(ctx, viewportOverrideKey{}, &viewportOverride{Width: width, Height: height})
+}
+
+// viewportOverrideFromCtx extracts viewport override from context.
+func viewportOverrideFromCtx(ctx context.Context) *viewportOverride {
+	if v, ok := ctx.Value(viewportOverrideKey{}).(*viewportOverride); ok {
+		return v
+	}
+	return nil
 }

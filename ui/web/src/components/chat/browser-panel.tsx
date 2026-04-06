@@ -2,6 +2,7 @@ import { useState, useRef, useCallback } from "react";
 import { GripVertical, Globe, X, Lock, ArrowLeft, ArrowRight, RotateCw } from "lucide-react";
 import { BrowserViewer } from "@/pages/browser/browser-viewer";
 import { cn } from "@/lib/utils";
+import { useHttp } from "@/hooks/use-ws";
 import type { BrowserTab } from "@/pages/browser/hooks/use-browser-status";
 
 interface BrowserPanelProps {
@@ -17,10 +18,16 @@ const MIN_WIDTH = 320;
 const MAX_RATIO = 0.65;
 
 export function BrowserPanel({ targetId, tabTitle, tabUrl, tabs, onClose, onSwitchTab }: BrowserPanelProps) {
+  const http = useHttp();
   const [error, setError] = useState<string | null>(null);
   const [width, setWidth] = useState<number | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const wrapperRef = useRef<HTMLDivElement>(null);
+  const sendNavRef = useRef<((action: "back" | "forward" | "reload") => void) | null>(null);
+
+  const handleNavReady = useCallback((fn: (action: "back" | "forward" | "reload") => void) => {
+    sendNavRef.current = fn;
+  }, []);
 
   // Suppress disconnect errors during tab switches
   const switchingRef = useRef(false);
@@ -108,22 +115,52 @@ export function BrowserPanel({ targetId, tabTitle, tabUrl, tabs, onClose, onSwit
         {tabs && tabs.length > 0 && (
           <div className="shrink-0 flex items-center gap-0.5 overflow-x-auto border-b bg-muted/30 px-1 py-0.5">
             {tabs.map((tab) => (
-              <button
+              <div
                 key={tab.targetId}
-                type="button"
-                onClick={() => handleSwitchTab(tab.targetId, tab.title, tab.url)}
                 className={cn(
-                  "group flex min-w-0 max-w-[180px] items-center gap-1.5 rounded-md px-2 py-1 text-xs transition-colors",
+                  "group flex min-w-0 max-w-[200px] items-center rounded-md text-xs transition-colors",
                   tab.targetId === targetId
                     ? "bg-background text-foreground shadow-sm"
                     : "text-muted-foreground hover:bg-background/60 hover:text-foreground",
                 )}
               >
-                <Globe className="h-3 w-3 shrink-0" />
-                <span className="truncate">
-                  {tab.title || (() => { try { return new URL(tab.url || "about:blank").hostname; } catch { return "New Tab"; } })()}
-                </span>
-              </button>
+                <button
+                  type="button"
+                  onClick={() => handleSwitchTab(tab.targetId, tab.title, tab.url)}
+                  className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1"
+                >
+                  <Globe className="h-3 w-3 shrink-0" />
+                  <span className="truncate">
+                    {tab.title || (() => { try { return new URL(tab.url || "about:blank").hostname; } catch { return "New Tab"; } })()}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={async (e) => {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    try {
+                      await http.post("/browser/close-tab", { targetId: tab.targetId });
+                    } catch { /* tab may already be gone */ }
+                    // If we closed the active tab, switch to the adjacent tab
+                    if (tab.targetId === targetId) {
+                      const idx = tabs.findIndex((t) => t.targetId === tab.targetId);
+                      const remaining = tabs.filter((t) => t.targetId !== tab.targetId);
+                      const next = remaining[Math.min(idx, remaining.length - 1)];
+                      if (next) {
+                        onSwitchTab?.(next.targetId, next.title, next.url);
+                      } else {
+                        onClose();
+                      }
+                    }
+                  }}
+                  className="shrink-0 rounded-sm p-1 mr-0.5 text-muted-foreground/0 group-hover:text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors"
+                  title="Close tab"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </div>
             ))}
           </div>
         )}
@@ -132,9 +169,30 @@ export function BrowserPanel({ targetId, tabTitle, tabUrl, tabs, onClose, onSwit
         {displayUrl && (
           <div className="shrink-0 flex items-center gap-1.5 border-b px-2 py-1">
             <div className="flex items-center gap-0.5 text-muted-foreground">
-              <ArrowLeft className="h-3 w-3 opacity-30" />
-              <ArrowRight className="h-3 w-3 opacity-30" />
-              <RotateCw className="h-3 w-3 opacity-30" />
+              <button
+                type="button"
+                onClick={() => sendNavRef.current?.("back")}
+                className="rounded p-0.5 hover:bg-accent hover:text-accent-foreground transition-colors"
+                title="Back"
+              >
+                <ArrowLeft className="h-3 w-3" />
+              </button>
+              <button
+                type="button"
+                onClick={() => sendNavRef.current?.("forward")}
+                className="rounded p-0.5 hover:bg-accent hover:text-accent-foreground transition-colors"
+                title="Forward"
+              >
+                <ArrowRight className="h-3 w-3" />
+              </button>
+              <button
+                type="button"
+                onClick={() => sendNavRef.current?.("reload")}
+                className="rounded p-0.5 hover:bg-accent hover:text-accent-foreground transition-colors"
+                title="Reload"
+              >
+                <RotateCw className="h-3 w-3" />
+              </button>
             </div>
             <div className="flex min-w-0 flex-1 items-center gap-1 rounded-md bg-muted/50 px-2 py-0.5">
               {displayUrl.startsWith("https") && (
@@ -175,6 +233,7 @@ export function BrowserPanel({ targetId, tabTitle, tabUrl, tabs, onClose, onSwit
               initialMode="takeover"
               onClose={onClose}
               onDisconnect={handleDisconnect}
+              onNavReady={handleNavReady}
               tabTitle={displayTitle || undefined}
               tabUrl={displayUrl || undefined}
               className="h-full"

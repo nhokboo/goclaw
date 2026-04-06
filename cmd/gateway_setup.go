@@ -92,7 +92,7 @@ func setupToolRegistry(
 	if cfg.Tools.Browser.Enabled {
 		var opts []browser.Option
 
-		// Resolve mode: explicit field > inferred from legacy fields > default "host"
+		// Resolve mode: explicit field > inferred from legacy fields > auto-detect
 		mode := cfg.Tools.Browser.Mode
 		if mode == "" {
 			switch {
@@ -101,7 +101,14 @@ func setupToolRegistry(
 			case cfg.Tools.Browser.ImagePreset == "stealth" || cfg.Tools.Browser.ImagePreset == "custom":
 				mode = "docker"
 			default:
-				mode = "host"
+				// When running inside Docker, "host" mode won't work (no Chrome binary).
+				// Auto-select "docker" with sibling containers via Docker socket.
+				if browser.IsInsideDocker() {
+					mode = "docker"
+					slog.Info("auto-detected Docker environment, using sibling container mode for browser")
+				} else {
+					mode = "host"
+				}
 			}
 		}
 
@@ -132,6 +139,10 @@ func setupToolRegistry(
 			}
 			if cfg.Tools.Browser.ContainerNetwork != "" {
 				copts = append(copts, browser.WithContainerNetwork(cfg.Tools.Browser.ContainerNetwork))
+			}
+			// Auto-enable sibling mode when running inside Docker
+			if browser.IsInsideDocker() {
+				copts = append(copts, browser.WithSiblingMode())
 			}
 			poolEngine := browser.NewContainerPoolEngine(containerImage, poolSize, slog.Default(), copts...)
 			opts = append(opts, browser.WithEngine(poolEngine))

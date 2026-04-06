@@ -262,6 +262,7 @@ func (l *Loop) injectContext(ctx context.Context, req *RunRequest) (contextSetup
 		SandboxCfg:          l.sandboxCfg,
 		ShellDenyGroups:     l.shellDenyGroups,
 		BrowserUseProxy:    l.browserUseProxy,
+		BrowserOpts:        l.browserOpts,
 		Workspace:           tools.ToolWorkspaceFromCtx(ctx),
 		TeamWorkspace:       tools.ToolTeamWorkspaceFromCtx(ctx),
 		TeamID:              tools.ToolTeamIDFromCtx(ctx),

@@ -1,4 +1,4 @@
-import { useRef, useState, useCallback } from "react";
+import { useRef, useState, useCallback, useEffect } from "react";
 import { X, Monitor, MousePointer, Eye, Maximize2, Minimize2 } from "lucide-react";
 import { useScreencast } from "./hooks/use-screencast";
 import { cn } from "@/lib/utils";
@@ -15,6 +15,8 @@ interface BrowserViewerProps {
   showHeader?: boolean;
   tabTitle?: string;
   tabUrl?: string;
+  /** Callback to receive the sendNav function from the screencast hook */
+  onNavReady?: (sendNav: (action: "back" | "forward" | "reload") => void) => void;
 }
 
 export function BrowserViewer({
@@ -24,6 +26,7 @@ export function BrowserViewer({
   className,
   onClose,
   onDisconnect,
+  onNavReady,
   showHeader = true,
   tabTitle,
   tabUrl,
@@ -33,13 +36,17 @@ export function BrowserViewer({
   const [isFullscreen, setIsFullscreen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  const { connected, error, fps, resolution } = useScreencast({
+  const { connected, error, fps, resolution, sendNav } = useScreencast({
     token,
     targetId,
     canvasRef,
     mode,
     onDisconnect,
   });
+
+  useEffect(() => {
+    onNavReady?.(sendNav);
+  }, [sendNav, onNavReady]);
 
   const toggleFullscreen = useCallback(() => {
     if (!containerRef.current) return;

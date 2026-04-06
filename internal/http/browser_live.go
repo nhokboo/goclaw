@@ -9,8 +9,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -22,7 +26,7 @@ import (
 // BrowserLiveHandler provides HTTP endpoints for browser live view (screencast + input relay).
 type BrowserLiveHandler struct {
 	sessions store.ScreencastSessionStore
-	manager  *browser.Manager
+	manager  atomic.Pointer[browser.Manager]
 	logger   *slog.Logger
 	upgrader websocket.Upgrader
 }
@@ -32,20 +36,58 @@ func NewBrowserLiveHandler(ss store.ScreencastSessionStore, mgr *browser.Manager
 	if l == nil {
 		l = slog.Default()
 	}
-	return &BrowserLiveHandler{
+	h := &BrowserLiveHandler{
 		sessions: ss,
-		manager:  mgr,
 		logger:   l,
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  4096,
 			WriteBufferSize: 65536,
-			CheckOrigin:     func(r *http.Request) bool { return true },
+			CheckOrigin:     checkSameOrigin,
 		},
 	}
+	h.manager.Store(mgr)
+	return h
+}
+
+// checkSameOrigin validates the Origin header matches the request Host.
+// Blocks cross-site WebSocket hijacking from arbitrary websites while allowing:
+// - Same-origin requests (production)
+// - localhost cross-port requests (Vite dev proxy: e.g. localhost:5173 → localhost:8080)
+func checkSameOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true // No Origin header = non-browser client, allow
+	}
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	originHost := u.Hostname()
+	requestHost := r.Host
+	// Strip port from request Host for comparison
+	if h, _, err := net.SplitHostPort(requestHost); err == nil {
+		requestHost = h
+	}
+	// Same host (ignoring port) — covers both production and localhost dev proxy
+	if strings.EqualFold(originHost, requestHost) {
+		return true
+	}
+	// Allow localhost variants talking to each other (127.0.0.1 ↔ localhost)
+	if isLocalhost(originHost) && isLocalhost(requestHost) {
+		return true
+	}
+	return false
+}
+
+func isLocalhost(host string) bool {
+	return host == "localhost" || host == "127.0.0.1" || host == "::1"
 }
 
 // SetManager replaces the underlying browser Manager (used for config hot-reload).
-func (h *BrowserLiveHandler) SetManager(mgr *browser.Manager) { h.manager = mgr }
+func (h *BrowserLiveHandler) SetManager(mgr *browser.Manager) { h.manager.Store(mgr) }
+
+// getManager returns the current browser Manager (safe for concurrent access).
+func (h *BrowserLiveHandler) getManager() *browser.Manager { return h.manager.Load() }
 
 // RegisterRoutes registers the live view HTTP routes.
 func (h *BrowserLiveHandler) RegisterRoutes(mux *http.ServeMux) {
@@ -53,6 +95,7 @@ func (h *BrowserLiveHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /browser/tabs", requireAuth("", h.handleTabs))
 	mux.HandleFunc("POST /browser/start", requireAuth("", h.handleStartBrowser))
 	mux.HandleFunc("POST /browser/stop", requireAuth("", h.handleStopBrowser))
+	mux.HandleFunc("POST /browser/close-tab", requireAuth("", h.handleCloseTab))
 	// Authenticated screencast — direct WS for chat panel.
 	// Auth via ?token= query param (WebSocket API cannot send custom headers).
 	// The token is the gateway bearer token, same as used by all HTTP endpoints.
@@ -76,12 +119,12 @@ func browserCtx(r *http.Request) context.Context {
 // handleStatus returns the current browser engine status.
 func (h *BrowserLiveHandler) handleStatus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(h.manager.Status())
+	json.NewEncoder(w).Encode(h.getManager().Status())
 }
 
 // handleTabs returns a list of open browser tabs, optionally filtered by agentKey query param.
 func (h *BrowserLiveHandler) handleTabs(w http.ResponseWriter, r *http.Request) {
-	tabs, err := h.manager.ListTabs(browserCtx(r))
+	tabs, err := h.getManager().ListTabs(browserCtx(r))
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{"tabs": []any{}, "error": err.Error()})
@@ -113,7 +156,7 @@ func (h *BrowserLiveHandler) handleTabs(w http.ResponseWriter, r *http.Request) 
 
 // handleStartBrowser starts the browser engine.
 func (h *BrowserLiveHandler) handleStartBrowser(w http.ResponseWriter, r *http.Request) {
-	if err := h.manager.Start(browserCtx(r)); err != nil {
+	if err := h.getManager().Start(browserCtx(r)); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -123,8 +166,31 @@ func (h *BrowserLiveHandler) handleStartBrowser(w http.ResponseWriter, r *http.R
 
 // handleStopBrowser stops the browser engine.
 func (h *BrowserLiveHandler) handleStopBrowser(w http.ResponseWriter, r *http.Request) {
-	if err := h.manager.Stop(browserCtx(r)); err != nil {
+	if err := h.getManager().Stop(browserCtx(r)); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"ok": true})
+}
+
+// handleCloseTab closes a specific browser tab by targetId.
+func (h *BrowserLiveHandler) handleCloseTab(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		TargetID string `json:"targetId"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.TargetID == "" {
+		http.Error(w, "targetId is required", http.StatusBadRequest)
+		return
+	}
+	if err := h.getManager().CloseTab(browserCtx(r), req.TargetID); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -151,7 +217,7 @@ func (h *BrowserLiveHandler) handleCreate(w http.ResponseWriter, r *http.Request
 
 	// Verify target page exists before creating a session token.
 	// After browser restart, old targetIDs are gone — fail fast with a clear error.
-	if h.manager.PageByTargetID(req.TargetID) == nil {
+	if h.getManager().PageByTargetID(req.TargetID) == nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotFound)
 		json.NewEncoder(w).Encode(map[string]string{"error": "target page not found"})
@@ -284,7 +350,7 @@ func (h *BrowserLiveHandler) handleScreencastWS(w http.ResponseWriter, r *http.R
 	}
 	defer conn.Close()
 
-	page := h.manager.PageByTargetID(targetID)
+	page := h.getManager().PageByTargetID(targetID)
 	if page == nil {
 		conn.WriteMessage(websocket.TextMessage, []byte(`{"error":"target page not found"}`))
 		return
@@ -320,7 +386,7 @@ func (h *BrowserLiveHandler) handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	page := h.manager.PageByTargetID(sess.TargetID)
+	page := h.getManager().PageByTargetID(sess.TargetID)
 	if page == nil {
 		conn.WriteMessage(websocket.TextMessage, []byte(`{"error":"target page not found"}`))
 		return
@@ -340,7 +406,7 @@ func (h *BrowserLiveHandler) runScreencastLoop(conn *websocket.Conn, page browse
 	// Background tabs don't generate screencast frames.
 	_ = page.Activate()
 
-	vpW, vpH := h.manager.ViewportSize()
+	vpW, vpH := h.getManager().ViewportSize()
 	const screencastFPS = 10
 	const screencastQuality = 60
 	if err := page.StartScreencast(screencastFPS, screencastQuality, vpW, vpH, frameCh); err != nil {
@@ -354,6 +420,10 @@ func (h *BrowserLiveHandler) runScreencastLoop(conn *websocket.Conn, page browse
 		viewportH float64 = float64(vpH)
 		dimsMu    sync.Mutex
 	)
+
+	// Image dimension tracking for coordinate mapping (shared with frame sender goroutine).
+	var imageW, imageH float64
+	var imgDimsMu sync.Mutex
 
 	// Frame sender goroutine
 	done := make(chan struct{})
@@ -388,6 +458,16 @@ func (h *BrowserLiveHandler) runScreencastLoop(conn *websocket.Conn, page browse
 					viewportSent = true
 				}
 			}
+			// Track image dimensions from JPEG for coordinate mapping.
+			// Screencast JPEG size = viewport scaled to fit maxW x maxH.
+			if frame.Metadata.DeviceWidth > 0 {
+				imgDimsMu.Lock()
+				// Screencast output is scaled to fit within maxW x maxH while preserving aspect ratio.
+				scale := min(float64(vpW)/frame.Metadata.DeviceWidth, float64(vpH)/frame.Metadata.DeviceHeight)
+				imageW = frame.Metadata.DeviceWidth * scale
+				imageH = frame.Metadata.DeviceHeight * scale
+				imgDimsMu.Unlock()
+			}
 			if err := conn.WriteMessage(websocket.BinaryMessage, frame.Data); err != nil {
 				h.logger.Warn("screencast frame write failed", "id", logID, "error", err)
 				return
@@ -395,13 +475,22 @@ func (h *BrowserLiveHandler) runScreencastLoop(conn *websocket.Conn, page browse
 		}
 	}()
 
-	maxW, maxH := float64(vpW), float64(vpH)
+	// Map image pixel coordinates to CSS viewport coordinates.
+	// Frontend sends coords in native image pixel space (canvas.width x canvas.height).
+	// Screencast JPEG dimensions may differ from the CSS viewport due to device pixel
+	// ratio and fit-to-maxW/maxH scaling. We use the ratio from frame metadata.
 	mapCoords := func(imgX, imgY float64) (float64, float64) {
 		dimsMu.Lock()
 		vw, vh := viewportW, viewportH
 		dimsMu.Unlock()
-		scale := min(maxW/vw, maxH/vh)
-		return imgX / scale, imgY / scale
+		imgDimsMu.Lock()
+		iw, ih := imageW, imageH
+		imgDimsMu.Unlock()
+		if iw > 0 && ih > 0 {
+			return imgX * vw / iw, imgY * vh / ih
+		}
+		// Fallback: assume image matches viewport
+		return imgX, imgY
 	}
 
 	cdpButton := func(btn int) string {
@@ -417,7 +506,55 @@ func (h *BrowserLiveHandler) runScreencastLoop(conn *websocket.Conn, page browse
 		}
 	}
 
-	// Input receiver
+	// Input dispatch via single goroutine + channel.
+	// Buffered channel absorbs bursts; mousemove dropped on backpressure, clicks never dropped.
+	type inputEvent struct {
+		typ                    string
+		cx, cy                 float64
+		btn                    string
+		clickCount, mod        int
+		deltaX, deltaY         float64
+		key, code, text        string
+		vkCode                 int
+	}
+	inputCh := make(chan inputEvent, 32)
+	inputDone := make(chan struct{})
+
+	go func() {
+		defer close(inputDone)
+		for ev := range inputCh {
+			switch ev.typ {
+			case "mousedown":
+				page.DispatchMouseEvent("mousePressed", ev.cx, ev.cy, ev.btn, 1)
+			case "mouseup":
+				page.DispatchMouseEvent("mouseReleased", ev.cx, ev.cy, ev.btn, 1)
+			case "click":
+				page.DispatchMouseEvent("mousePressed", ev.cx, ev.cy, ev.btn, 1)
+				time.Sleep(30 * time.Millisecond)
+				page.DispatchMouseEvent("mouseReleased", ev.cx, ev.cy, ev.btn, 1)
+			case "dblclick":
+				page.DispatchMouseEvent("mousePressed", ev.cx, ev.cy, ev.btn, 1)
+				page.DispatchMouseEvent("mouseReleased", ev.cx, ev.cy, ev.btn, 1)
+				time.Sleep(10 * time.Millisecond)
+				page.DispatchMouseEvent("mousePressed", ev.cx, ev.cy, ev.btn, 2)
+				page.DispatchMouseEvent("mouseReleased", ev.cx, ev.cy, ev.btn, 2)
+			case "mousemove":
+				page.DispatchMouseEvent("mouseMoved", ev.cx, ev.cy, "none", 0)
+			case "scroll", "mouseWheel":
+				page.DispatchScrollEvent(ev.cx, ev.cy, ev.deltaX, ev.deltaY)
+			case "mousePressed", "mouseReleased", "mouseMoved":
+				page.DispatchMouseEvent(ev.typ, ev.cx, ev.cy, ev.btn, ev.clickCount)
+			case "keydown", "keyDown":
+				page.DispatchKeyEvent("keyDown", ev.key, ev.code, "", ev.mod, ev.vkCode)
+				if ev.text != "" {
+					page.DispatchKeyEvent("char", ev.key, ev.code, ev.text, ev.mod, ev.vkCode)
+				}
+			case "keyup", "keyUp":
+				page.DispatchKeyEvent("keyUp", ev.key, ev.code, "", ev.mod, ev.vkCode)
+			}
+		}
+	}()
+
 	for {
 		_, msg, err := conn.ReadMessage()
 		if err != nil {
@@ -450,6 +587,20 @@ func (h *BrowserLiveHandler) runScreencastLoop(conn *websocket.Conn, page browse
 		if err := json.Unmarshal(msg, &input); err != nil {
 			continue
 		}
+
+		// Navigation commands — handled inline.
+		if input.Type == "nav" {
+			switch input.Key {
+			case "back":
+				page.Eval(`() => history.back()`)
+			case "forward":
+				page.Eval(`() => history.forward()`)
+			case "reload":
+				page.Eval(`() => location.reload()`)
+			}
+			continue
+		}
+
 		cssX, cssY := mapCoords(input.X, input.Y)
 		btn := cdpButton(input.Button)
 		if input.ButtonName != "" {
@@ -476,52 +627,33 @@ func (h *BrowserLiveHandler) runScreencastLoop(conn *websocket.Conn, page browse
 			input.VKCode = keyToVKCode(input.Key)
 		}
 
-		ev := input
-		cx, cy := cssX, cssY
-		bt, md := btn, mod
+		text := ""
+		if (input.Type == "keydown" || input.Type == "keyDown") && len(input.Key) == 1 {
+			text = input.Key
+		}
 
-		go func() {
-			switch ev.Type {
-			case "mousedown":
-				page.DispatchMouseEvent("mousePressed", cx, cy, bt, 1)
-			case "mouseup":
-				page.DispatchMouseEvent("mouseReleased", cx, cy, bt, 1)
-			case "click":
-				page.DispatchMouseEvent("mousePressed", cx, cy, bt, 1)
-				time.Sleep(30 * time.Millisecond)
-				page.DispatchMouseEvent("mouseReleased", cx, cy, bt, 1)
-			case "dblclick":
-				page.DispatchMouseEvent("mousePressed", cx, cy, bt, 1)
-				page.DispatchMouseEvent("mouseReleased", cx, cy, bt, 1)
-				time.Sleep(10 * time.Millisecond)
-				page.DispatchMouseEvent("mousePressed", cx, cy, bt, 2)
-				page.DispatchMouseEvent("mouseReleased", cx, cy, bt, 2)
-			case "mousemove":
-				page.DispatchMouseEvent("mouseMoved", cx, cy, "none", 0)
-			case "scroll":
-				if _, err := page.Eval(fmt.Sprintf(`() => window.scrollBy(%f, %f)`, ev.DeltaX, ev.DeltaY)); err != nil {
-					page.DispatchScrollEvent(cx, cy, ev.DeltaX, ev.DeltaY)
-				}
-			case "mousePressed", "mouseReleased", "mouseMoved":
-				page.DispatchMouseEvent(ev.Type, cx, cy, bt, ev.ClickCount)
-			case "mouseWheel":
-				if _, err := page.Eval(fmt.Sprintf(`() => window.scrollBy(%f, %f)`, ev.DeltaX, ev.DeltaY)); err != nil {
-					page.DispatchScrollEvent(cx, cy, ev.DeltaX, ev.DeltaY)
-				}
-			case "keydown", "keyDown":
-				text := ""
-				if len(ev.Key) == 1 {
-					text = ev.Key
-				}
-				page.DispatchKeyEvent("keyDown", ev.Key, ev.Code, "", md, ev.VKCode)
-				if text != "" {
-					page.DispatchKeyEvent("char", ev.Key, ev.Code, text, md, ev.VKCode)
-				}
-			case "keyup", "keyUp":
-				page.DispatchKeyEvent("keyUp", ev.Key, ev.Code, "", md, ev.VKCode)
+		ev := inputEvent{
+			typ: input.Type, cx: cssX, cy: cssY, btn: btn,
+			clickCount: input.ClickCount, mod: mod,
+			deltaX: input.DeltaX, deltaY: input.DeltaY,
+			key: input.Key, code: input.Code, text: text,
+			vkCode: input.VKCode,
+		}
+
+		// Mousemove: drop on backpressure. Everything else: always send.
+		droppable := ev.typ == "mousemove" || ev.typ == "mouseMoved"
+		if droppable {
+			select {
+			case inputCh <- ev:
+			default: // drop
 			}
-		}()
+		} else {
+			inputCh <- ev
+		}
 	}
+
+	close(inputCh)
+	<-inputDone
 
 	// Unsubscribe this viewer's channel. CDP screencast stops only when last viewer leaves.
 	page.StopScreencastCh(frameCh)

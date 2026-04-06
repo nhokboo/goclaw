@@ -2,6 +2,7 @@ package browser
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -21,6 +22,7 @@ type ContainerEngine struct {
 	image       string // e.g. "zenika/alpine-chrome:latest"
 	containerID string
 	cdpPort     int
+	cdpHost     string // host to connect to CDP (127.0.0.1 on host, container name in Docker)
 	inner       Engine // ChromeEngine connected to the container
 	mu          sync.Mutex
 	logger      *slog.Logger
@@ -29,6 +31,10 @@ type ContainerEngine struct {
 	memoryMB int     // --memory flag (MB), 0 = no limit
 	cpuLimit float64 // --cpus flag, 0 = no limit
 	network  string  // --network flag, "" = default
+
+	// Sibling container mode: gateway runs in Docker, Chrome containers are siblings.
+	// When true, connect via container name:9222 instead of host port mapping.
+	sibling bool
 }
 
 // ContainerOpt configures a ContainerEngine.
@@ -47,6 +53,14 @@ func WithContainerCPU(cpu float64) ContainerOpt {
 // WithContainerNetwork sets the Docker network name for the container.
 func WithContainerNetwork(network string) ContainerOpt {
 	return func(e *ContainerEngine) { e.network = network }
+}
+
+// WithSiblingMode enables sibling container mode for Docker-in-Docker scenarios.
+// When the gateway itself runs in a Docker container, Chrome containers are launched
+// as siblings (via mounted /var/run/docker.sock) on the same Docker network.
+// CDP connects via container name:9222 instead of host port mapping.
+func WithSiblingMode() ContainerOpt {
+	return func(e *ContainerEngine) { e.sibling = true }
 }
 
 // DefaultContainerImage is the default Docker image for container engine.
@@ -83,16 +97,16 @@ func (e *ContainerEngine) Launch(opts LaunchOpts) error {
 	defer e.mu.Unlock()
 
 	// If container is still running, try to reconnect instead of recreating
-	if e.containerID != "" && e.cdpPort > 0 && isContainerRunning(e.containerID) {
+	if e.containerID != "" && (e.cdpPort > 0 || e.cdpHost != "") && isContainerRunning(e.containerID) {
 		if e.inner != nil {
 			e.inner.Close()
 		}
 		inner := NewChromeEngine(e.logger)
 		if err := inner.Launch(LaunchOpts{
-			RemoteURL: fmt.Sprintf("ws://127.0.0.1:%d", e.cdpPort),
+			RemoteURL: e.cdpURL(),
 		}); err == nil {
 			e.inner = inner
-			e.logger.Info("reconnected to existing container", "id", e.containerID[:min(12, len(e.containerID))], "port", e.cdpPort)
+			e.logger.Info("reconnected to existing container", "id", e.containerID[:min(12, len(e.containerID))], "cdp", e.cdpURL())
 			return nil
 		}
 		e.logger.Warn("existing container unreachable, recreating")
@@ -111,10 +125,19 @@ func (e *ContainerEngine) Launch(opts LaunchOpts) error {
 	hasSocatEntrypoint := strings.Contains(e.image, "goclaw/") || strings.Contains(e.image, "headless-shell")
 	isZenika := strings.Contains(e.image, "zenika/alpine-chrome")
 
-	args := []string{
-		"run", "-d",
-		"-p", "127.0.0.1::9222",
-		"--shm-size=512m", // Chrome needs shared memory for rendering
+	// Generate a unique container name for sibling mode (used as DNS hostname).
+	containerName := ""
+	args := []string{"run", "-d", "--shm-size=512m"}
+	if e.sibling {
+		containerName = fmt.Sprintf("goclaw-chrome-%s", randomSuffix())
+		args = append(args, "--name", containerName)
+		// No port mapping — connect via container name:9222 on shared network
+		if e.network == "" {
+			e.network = detectDockerNetwork()
+		}
+	} else {
+		// Host mode: map container port 9222 to a random host port
+		args = append(args, "-p", "127.0.0.1::9222")
 	}
 
 	// Resource limits
@@ -156,6 +179,9 @@ func (e *ContainerEngine) Launch(opts LaunchOpts) error {
 
 	// Stealth flags — passed as Chrome command-line args inside the container.
 	containerStealthFlags := []string{
+		// Allow CDP connections from any origin — required for sibling container mode
+		// where the Host header is the container name (not localhost/IP).
+		"--remote-allow-origins=*",
 		"--disable-blink-features=AutomationControlled",
 		"--disable-features=AutomationControlled,TranslateUI,EnableAutomation",
 		"--disable-infobars",
@@ -244,26 +270,37 @@ func (e *ContainerEngine) Launch(opts LaunchOpts) error {
 	}
 	e.containerID = strings.TrimSpace(string(out))
 
-	// Read the actual host port Docker assigned via `docker port`.
-	port, err := e.readAssignedPort()
-	if err != nil {
-		e.logger.Error("failed to read Docker-assigned port", "error", err,
-			"container", e.containerID[:min(12, len(e.containerID))])
-		e.dumpContainerLogs()
-		e.stopContainer()
-		return fmt.Errorf("read assigned port: %w", err)
-	}
-	e.cdpPort = port
-
-	if len(e.containerID) > 12 {
-		e.logger.Info("container started", "id", e.containerID[:12], "port", port, "image", e.image)
+	if e.sibling {
+		// Sibling mode: connect via container name on internal port 9222
+		e.cdpHost = containerName
+		e.cdpPort = 9222
+		shortID := e.containerID
+		if len(shortID) > 12 {
+			shortID = shortID[:12]
+		}
+		e.logger.Info("container started (sibling)", "id", shortID, "host", containerName, "network", e.network, "image", e.image)
+	} else {
+		// Host mode: read the Docker-assigned host port
+		port, err := e.readAssignedPort()
+		if err != nil {
+			e.logger.Error("failed to read Docker-assigned port", "error", err,
+				"container", e.containerID[:min(12, len(e.containerID))])
+			e.dumpContainerLogs()
+			e.stopContainer()
+			return fmt.Errorf("read assigned port: %w", err)
+		}
+		e.cdpHost = "127.0.0.1"
+		e.cdpPort = port
+		if len(e.containerID) > 12 {
+			e.logger.Info("container started", "id", e.containerID[:12], "port", port, "image", e.image)
+		}
 	}
 
 	// Wait for CDP to be ready
-	cdpURL := fmt.Sprintf("http://127.0.0.1:%d", port)
-	if err := waitForCDP(cdpURL, 60*time.Second, e.logger, e.containerID); err != nil {
+	cdpHTTP := fmt.Sprintf("http://%s:%d", e.cdpHost, e.cdpPort)
+	if err := waitForCDP(cdpHTTP, 60*time.Second, e.logger, e.containerID); err != nil {
 		e.logger.Error("CDP not ready after 60s — killing container",
-			"port", port, "image", e.image, "container", e.containerID[:min(12, len(e.containerID))])
+			"cdp", cdpHTTP, "image", e.image, "container", e.containerID[:min(12, len(e.containerID))])
 		e.dumpContainerLogs()
 		e.stopContainer()
 		return fmt.Errorf("wait for CDP: %w", err)
@@ -271,12 +308,12 @@ func (e *ContainerEngine) Launch(opts LaunchOpts) error {
 
 	// Create inner ChromeEngine connected via remote CDP
 	inner := NewChromeEngine(e.logger)
-	remoteWS := fmt.Sprintf("ws://127.0.0.1:%d", port)
+	remoteWS := e.cdpURL()
 	if err := inner.Launch(LaunchOpts{
 		RemoteURL: remoteWS,
 	}); err != nil {
 		e.logger.Error("rod WebSocket connection to container failed — killing container",
-			"port", port, "remoteURL", remoteWS, "error", err,
+			"cdp", remoteWS, "error", err,
 			"container", e.containerID[:min(12, len(e.containerID))])
 		e.dumpContainerLogs()
 		e.stopContainer()
@@ -399,26 +436,93 @@ func (e *ContainerEngine) IsConnected() bool {
 	}
 
 	// Inner connection lost but container may still be running — try to reconnect
-	if e.containerID != "" && e.cdpPort > 0 {
+	if e.containerID != "" && (e.cdpPort > 0 || e.cdpHost != "") {
 		if isContainerRunning(e.containerID) {
-			e.logger.Info("container still running, reconnecting inner engine", "port", e.cdpPort)
+			cdp := e.cdpURL()
+			e.logger.Info("container still running, reconnecting inner engine", "cdp", cdp)
 			if e.inner != nil {
 				e.inner.Close()
 			}
 			inner := NewChromeEngine(e.logger)
 			if err := inner.Launch(LaunchOpts{
-				RemoteURL: fmt.Sprintf("ws://127.0.0.1:%d", e.cdpPort),
+				RemoteURL: cdp,
 			}); err == nil {
 				e.inner = inner
 				return true
 			}
-			e.logger.Warn("reconnect to container failed", "port", e.cdpPort)
+			e.logger.Warn("reconnect to container failed", "cdp", cdp)
 		}
 	}
 	return false
 }
 
 func (e *ContainerEngine) Name() string { return "container" }
+
+// cdpURL returns the WebSocket URL for connecting to this container's Chrome.
+func (e *ContainerEngine) cdpURL() string {
+	host := e.cdpHost
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	return fmt.Sprintf("ws://%s:%d", host, e.cdpPort)
+}
+
+// randomSuffix generates a short random hex string for container names.
+func randomSuffix() string {
+	b := make([]byte, 6)
+	rand.Read(b)
+	return fmt.Sprintf("%x", b)
+}
+
+// detectDockerNetwork returns the Docker network the gateway container is on.
+// Falls back to "bridge" if detection fails.
+func detectDockerNetwork() string {
+	// Read own container ID from /proc/self/cgroup or hostname
+	hostname, _ := os.Hostname()
+	if hostname == "" {
+		return "bridge"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "docker", "inspect", "-f",
+		`{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{end}}`,
+		hostname).CombinedOutput()
+	if err != nil {
+		return "bridge"
+	}
+	net := strings.TrimSpace(string(out))
+	if net == "" {
+		return "bridge"
+	}
+	return net
+}
+
+// IsInsideDocker returns true if the current process is running inside a Docker container.
+func IsInsideDocker() bool {
+	// Check for /.dockerenv (standard Docker marker)
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		return true
+	}
+	// Check cgroup for docker/containerd references
+	data, err := os.ReadFile("/proc/1/cgroup")
+	if err != nil {
+		return false
+	}
+	s := string(data)
+	return strings.Contains(s, "docker") || strings.Contains(s, "containerd")
+}
+
+// detectEnvironment returns "docker", "k8s", or "" (bare metal).
+func detectEnvironment() string {
+	// Kubernetes sets KUBERNETES_SERVICE_HOST in all pods
+	if os.Getenv("KUBERNETES_SERVICE_HOST") != "" {
+		return "k8s"
+	}
+	if IsInsideDocker() {
+		return "docker"
+	}
+	return ""
+}
 
 // freePort finds an available TCP port.
 func freePort() (int, error) {
@@ -447,7 +551,12 @@ func waitForCDP(baseURL string, timeout time.Duration, logger *slog.Logger, cont
 	}
 	for time.Now().Before(deadline) {
 		attempts++
-		resp, err := client.Get(url)
+		req, _ := http.NewRequest("GET", url, nil)
+		// Chrome DevTools rejects requests where the Host header is not localhost or an IP.
+		// In sibling container mode the URL host is a container name (e.g. goclaw-chrome-xxx).
+		// Override Host to satisfy Chrome's check.
+		req.Host = "localhost"
+		resp, err := client.Do(req)
 		if err != nil {
 			lastErr = err
 			if strings.Contains(err.Error(), "connection refused") {

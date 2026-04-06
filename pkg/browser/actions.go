@@ -3,6 +3,7 @@ package browser
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/go-rod/rod/lib/input"
@@ -158,7 +159,16 @@ func (m *Manager) Evaluate(ctx context.Context, targetID, js string) (string, er
 		return "", err
 	}
 
-	result, err := page.Eval(js)
+	// Rod's Eval expects an arrow function or function expression.
+	// LLMs often send raw expressions (e.g. "document.title") which Rod
+	// auto-wraps, but complex expressions can fail. Ensure proper wrapping.
+	evalJS := js
+	trimmed := strings.TrimSpace(js)
+	if !strings.HasPrefix(trimmed, "()") && !strings.HasPrefix(trimmed, "function") {
+		evalJS = "() => { return " + trimmed + " }"
+	}
+
+	result, err := page.Eval(evalJS)
 	if err != nil {
 		return "", fmt.Errorf("evaluate: %w", err)
 	}

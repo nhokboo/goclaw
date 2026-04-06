@@ -163,12 +163,31 @@ func extractStreamContentWithTools(msg *cliStreamMsg) (text, thinking string, to
 				})
 			}
 		case "tool_result":
-			// tool_result content can be a string or array of {type,text} objects.
-			// Extract the text content for tracing output preview.
+			// tool_result content can be a string (Text) or array of {type,text} objects (ToolResultContent).
 			if block.ToolID != "" {
-				tc := StreamChunk{ToolCallID: block.ToolID}
-				if block.Text != "" {
+				tc := StreamChunk{ToolCallID: block.ToolID, ToolIsError: block.IsError}
+				switch {
+				case block.Text != "":
 					tc.ToolResult = block.Text
+				case len(block.ToolResultContent) > 0:
+					// Try as string first
+					var s string
+					if json.Unmarshal(block.ToolResultContent, &s) == nil {
+						tc.ToolResult = s
+					} else {
+						// Array of {type, text} objects
+						var parts []cliToolResultContent
+						if json.Unmarshal(block.ToolResultContent, &parts) == nil {
+							var buf strings.Builder
+							for _, p := range parts {
+								buf.WriteString(p.Text)
+							}
+							tc.ToolResult = buf.String()
+						}
+					}
+				}
+				if tc.ToolResult == "" {
+					tc.ToolResult = "(empty)"
 				}
 				toolChunks = append(toolChunks, tc)
 			}

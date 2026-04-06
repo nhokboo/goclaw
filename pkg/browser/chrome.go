@@ -13,15 +13,18 @@ import (
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/input"
 	"github.com/go-rod/rod/lib/launcher"
+	"github.com/go-rod/rod/lib/launcher/flags"
 	"github.com/go-rod/rod/lib/proto"
 	"github.com/ysmood/gson"
 )
 
 // ChromeEngine implements Engine using go-rod (Chrome DevTools Protocol).
 type ChromeEngine struct {
-	browser  *rod.Browser
-	attached bool // true = don't kill process on Close()
-	logger   *slog.Logger
+	browser   *rod.Browser
+	attached  bool // true = don't kill process on Close()
+	logger    *slog.Logger
+	proxyUser string // proxy auth username (for CDP Fetch auth on new pages)
+	proxyPass string // proxy auth password (decrypted)
 }
 
 // NewChromeEngine creates a ChromeEngine. The engine is not connected until Launch() is called.
@@ -75,6 +78,21 @@ func (e *ChromeEngine) Launch(opts LaunchOpts) error {
 			l.Set("load-extension", strings.Join(opts.ExtensionPaths, ","))
 		}
 
+		// Apply window size (per-agent or default)
+		if opts.WindowWidth > 0 && opts.WindowHeight > 0 {
+			l.Set("window-size", fmt.Sprintf("%d,%d", opts.WindowWidth, opts.WindowHeight))
+		}
+
+		// Apply per-agent extra launch args
+		for _, arg := range opts.ExtraArgs {
+			parts := strings.SplitN(strings.TrimLeft(arg, "-"), "=", 2)
+			if len(parts) == 2 {
+				l.Set(flags.Flag(parts[0]), parts[1])
+			} else if len(parts) == 1 && parts[0] != "" {
+				l.Set(flags.Flag(parts[0]))
+			}
+		}
+
 		// Apply stealth flags to reduce automation detection
 		StealthFlags(l)
 
@@ -90,6 +108,9 @@ func (e *ChromeEngine) Launch(opts LaunchOpts) error {
 		e.attached = false
 		e.logger.Info("browser launched", "cdp", u, "headless", opts.Headless, "profile", opts.ProfileDir, "binary", opts.BinaryPath)
 	}
+	// Store proxy credentials for CDP Fetch-based auth on new pages
+	e.proxyUser = opts.ProxyUser
+	e.proxyPass = opts.ProxyPass
 	return nil
 }
 
@@ -110,6 +131,15 @@ func (e *ChromeEngine) Close() error {
 func (e *ChromeEngine) NewPage(ctx context.Context, url string) (Page, error) {
 	if e.browser == nil {
 		return nil, fmt.Errorf("browser not running")
+	}
+
+	// Inject proxy auth creds from engine config if not already in context.
+	// Host mode stores creds at launch time; container pool mode sets them per-request.
+	if proxyAuthCredsFromCtx(ctx) == nil && e.proxyUser != "" {
+		ctx = WithProxyAuthCreds(ctx, &ProxyAuthCreds{
+			Username: e.proxyUser,
+			Password: e.proxyPass,
+		})
 	}
 
 	// Create a blank page first so we can inject stealth scripts

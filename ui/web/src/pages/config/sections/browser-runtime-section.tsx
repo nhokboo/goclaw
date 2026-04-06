@@ -34,6 +34,7 @@ interface BrowserStatus {
   tabs?: number;
   engine?: string;
   headless?: boolean;
+  environment?: "docker" | "k8s" | "";
 }
 
 const MODES = ["host", "docker", "remote", "k8s"] as const;
@@ -143,13 +144,21 @@ export function BrowserRuntimeSection({ data, onSave, saving }: Props) {
             {MODES.map((m) => {
               const Icon = MODE_ICONS[m];
               const label = t(`tools.browserMode${m.charAt(0).toUpperCase() + m.slice(1)}`);
+              // "host" mode requires a local Chrome binary — not available inside Docker/K8s
+              const env = status?.environment;
+              const hostBlocked = m === "host" && (env === "docker" || env === "k8s");
+              const hostReason = env === "k8s"
+                ? t("tools.browserHostBlockedK8s")
+                : t("tools.browserHostBlockedDocker");
               return (
                 <Button
                   key={m}
                   variant={resolvedMode === m ? "default" : "outline"}
                   size="sm"
-                  className="gap-1.5"
-                  onClick={() => setMode(m)}
+                  className={cn("gap-1.5", hostBlocked && "opacity-50 cursor-not-allowed")}
+                  onClick={() => !hostBlocked && setMode(m)}
+                  disabled={hostBlocked}
+                  title={hostBlocked ? hostReason : undefined}
                 >
                   <Icon className="h-3.5 w-3.5" />
                   {label}
@@ -157,6 +166,12 @@ export function BrowserRuntimeSection({ data, onSave, saving }: Props) {
               );
             })}
           </div>
+          {/* Show environment notice when host mode is unavailable */}
+          {(status?.environment === "docker" || status?.environment === "k8s") && resolvedMode !== "host" && (
+            <p className="text-xs text-amber-600 dark:text-amber-400">
+              {status.environment === "k8s" ? t("tools.browserHostBlockedK8s") : t("tools.browserHostBlockedDocker")}
+            </p>
+          )}
         </div>
 
         {/* Per-mode settings */}
@@ -190,6 +205,14 @@ export function BrowserRuntimeSection({ data, onSave, saving }: Props) {
                 />
               </div>
             </div>
+          </div>
+        )}
+
+        {resolvedMode === "docker" && status?.environment === "docker" && (
+          <div className="rounded-md border border-blue-200 bg-blue-50 p-3 dark:border-blue-800 dark:bg-blue-950/30">
+            <p className="text-xs font-medium text-blue-700 dark:text-blue-300 mb-1">{t("tools.browserDockerMountTitle")}</p>
+            <p className="text-xs text-blue-600 dark:text-blue-400 mb-2">{t("tools.browserDockerMountDesc")}</p>
+            <pre className="text-[11px] font-mono bg-blue-100 dark:bg-blue-900/50 rounded p-2 overflow-x-auto text-blue-800 dark:text-blue-200 whitespace-pre-wrap">{t("tools.browserDockerMountCmd")}</pre>
           </div>
         )}
 

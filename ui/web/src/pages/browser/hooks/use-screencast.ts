@@ -17,6 +17,8 @@ export interface UseScreencastReturn {
   fps: number;
   resolution: { w: number; h: number };
   disconnect: () => void;
+  /** Send a navigation command (back/forward/reload) to the remote browser */
+  sendNav: (action: "back" | "forward" | "reload") => void;
 }
 
 /** Max auto-retry attempts before giving up */
@@ -312,5 +314,12 @@ export function useScreencast({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [wsKey]);
 
-  return { connected, error, fps, resolution, disconnect };
+  const sendNav = useCallback((action: "back" | "forward" | "reload") => {
+    const ws = wsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "nav", key: action }));
+    }
+  }, []);
+
+  return { connected, error, fps, resolution, disconnect, sendNav };
 }

@@ -173,15 +173,20 @@ func (m *Manager) Start(ctx context.Context) error {
 	// Resolve proxy URL: static config first, then pool-based auto-assign for host mode.
 	// Only auto-assign from pool if the agent has opted in via use_proxy context flag.
 	proxyURL := m.proxyURL
+	var proxyUser, proxyPass string
 	if useProxy, ok := useProxyFromCtx(ctx); ok && useProxy && proxyURL == "" && m.proxyMgr != nil {
 		tenantID := tenantIDFromCtx(ctx)
 		if tenantID == "" {
 			tenantID = MasterTenantID
 		}
 		if proxy, err := m.proxyMgr.AssignForProfile(ctx, tenantID, profileDir, ""); err == nil {
-			if fmtURL, fmtErr := m.proxyMgr.FormatURL(proxy); fmtErr == nil {
+			fmtURL, user, pass, fmtErr := m.proxyMgr.FormatURLAndCreds(proxy)
+			if fmtErr == nil {
 				proxyURL = fmtURL
-				m.logger.Info("host mode: auto-assigned proxy from pool", "proxy", proxy.Name)
+				proxyUser = user
+				proxyPass = pass
+				m.logger.Info("host mode: auto-assigned proxy from pool",
+					"proxy", proxy.Name, "hasAuth", user != "")
 			}
 		}
 	}
@@ -206,13 +211,22 @@ func (m *Manager) Start(ctx context.Context) error {
 		m.resetMapsLocked()
 	}
 
-	err := m.engine.Launch(LaunchOpts{
+	launchOpts := LaunchOpts{
 		Headless:   m.headless,
 		ProfileDir: profileDir,
 		RemoteURL:  m.remoteURL,
 		BinaryPath: m.binaryPath,
 		ProxyURL:   proxyURL,
-	})
+		ProxyUser:  proxyUser,
+		ProxyPass:  proxyPass,
+	}
+	// Apply per-agent browser options (launch args, window size) from context.
+	if bo := browserOptsFromCtx(ctx); bo != nil {
+		launchOpts.ExtraArgs = bo.LaunchArgs
+		launchOpts.WindowWidth = bo.WindowWidth
+		launchOpts.WindowHeight = bo.WindowHeight
+	}
+	err := m.engine.Launch(launchOpts)
 	if err != nil {
 		return err
 	}
@@ -330,16 +344,18 @@ func (m *Manager) Status() *StatusInfo {
 	headless := m.headless
 	m.mu.Unlock()
 
+	env := detectEnvironment()
 	if !engine.IsConnected() {
-		return &StatusInfo{Running: false}
+		return &StatusInfo{Running: false, Environment: env}
 	}
 
 	pages, _ := engine.Pages()
 	info := &StatusInfo{
-		Running:  true,
-		Tabs:     len(pages),
-		Engine:   engine.Name(),
-		Headless: &headless,
+		Running:     true,
+		Tabs:        len(pages),
+		Engine:      engine.Name(),
+		Headless:    &headless,
+		Environment: env,
 	}
 	if len(pages) > 0 {
 		if pageInfo, err := pages[0].Info(); err == nil && pageInfo != nil {

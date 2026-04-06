@@ -110,10 +110,11 @@ type ConsoleMessage struct {
 
 // StatusInfo describes the current browser state.
 type StatusInfo struct {
-	Running    bool   `json:"running"`
-	Tabs       int    `json:"tabs"`
-	URL        string `json:"url,omitempty"`        // current tab URL
-	Engine     string `json:"engine,omitempty"`      // engine name (chrome, container, lightpanda)
-	Headless   *bool  `json:"headless,omitempty"`   // headless mode flag (nil when not running)
-	ProfileDir string `json:"profileDir,omitempty"` // active Chrome profile directory
+	Running     bool   `json:"running"`
+	Tabs        int    `json:"tabs"`
+	URL         string `json:"url,omitempty"`         // current tab URL
+	Engine      string `json:"engine,omitempty"`       // engine name (chrome, container, lightpanda)
+	Headless    *bool  `json:"headless,omitempty"`    // headless mode flag (nil when not running)
+	ProfileDir  string `json:"profileDir,omitempty"`  // active Chrome profile directory
+	Environment string `json:"environment,omitempty"` // "docker", "k8s", or "" (bare metal)
 }

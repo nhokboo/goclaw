@@ -636,3 +636,21 @@ func BrowserUseProxyFromCtx(ctx context.Context) bool {
 	}
 	return false
 }
+
+// --- Per-agent browser launch args + window size ---
+
+const ctxBrowserOpts toolContextKey = "tool_browser_opts"
+
+func WithBrowserOpts(ctx context.Context, opts *store.BrowserOpts) context.Context {
+	return context.WithValue(ctx, ctxBrowserOpts, opts)
+}
+
+func BrowserOptsFromCtx(ctx context.Context) *store.BrowserOpts {
+	if v, _ := ctx.Value(ctxBrowserOpts).(*store.BrowserOpts); v != nil {
+		return v
+	}
+	if rc := store.RunContextFromCtx(ctx); rc != nil {
+		return rc.BrowserOpts
+	}
+	return nil
+}

@@ -409,6 +409,7 @@ func NewManagedResolver(deps ResolverDeps) ResolverFunc {
 			WorkspaceSharing:       ag.ParseWorkspaceSharing(),
 			ShellDenyGroups:        ag.ParseShellDenyGroups(),
 			BrowserUseProxy:       ag.ParseBrowserUseProxy(),
+			BrowserOpts:           parseBrowserOptsPtr(ag),
 			ConfigPermStore:        deps.ConfigPermStore,
 			TeamStore:              deps.TeamStore,
 			SecureCLIStore:         deps.SecureCLIStore,
@@ -465,6 +466,14 @@ func resolveTenantSlug(ts store.TenantStore, tenantID uuid.UUID) string {
 		return tenantID.String()
 	}
 	return tenant.Slug
+}
+
+func parseBrowserOptsPtr(ag *store.AgentData) *store.BrowserOpts {
+	opts := ag.ParseBrowserOpts()
+	if len(opts.LaunchArgs) == 0 && opts.WindowWidth == 0 && opts.WindowHeight == 0 {
+		return nil
+	}
+	return &opts
 }
 
 func derefInt(p *int) int {

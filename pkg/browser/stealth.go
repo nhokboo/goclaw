@@ -123,7 +123,7 @@ Object.defineProperty = function(obj, prop, desc) {
 	if ((obj === Navigator.prototype || obj === navigator) && prop === 'webdriver') {
 		return obj; // silently block Chrome from re-adding webdriver
 	}
-	return _origDefProp.call(this, obj, prop, desc);
+	return _origDefProp.call(Object, obj, prop, desc);
 };
 
 // --- chrome object ---

@@ -46,6 +46,7 @@ type RunContext struct {
 
 	// Browser
 	BrowserUseProxy bool
+	BrowserOpts     *BrowserOpts
 
 	// Workspace
 	Workspace        string

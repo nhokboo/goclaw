@@ -574,6 +574,23 @@ func (a *AgentData) ParseBrowserUseProxy() bool {
 	return cfg.BrowserUseProxy
 }
 
+// BrowserOpts holds per-agent browser configuration from other_config JSONB.
+type BrowserOpts struct {
+	LaunchArgs   []string `json:"browser_launch_args,omitempty"`
+	WindowWidth  int      `json:"browser_window_width,omitempty"`
+	WindowHeight int      `json:"browser_window_height,omitempty"`
+}
+
+// ParseBrowserOpts extracts per-agent browser options from other_config JSONB.
+func (a *AgentData) ParseBrowserOpts() BrowserOpts {
+	if len(a.OtherConfig) == 0 {
+		return BrowserOpts{}
+	}
+	var opts BrowserOpts
+	_ = json.Unmarshal(a.OtherConfig, &opts)
+	return opts
+}
+
 // AgentShareData represents an agent share grant.
 type AgentShareData struct {
 	BaseModel

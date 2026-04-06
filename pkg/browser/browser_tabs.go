@@ -131,6 +131,13 @@ func (m *Manager) OpenTab(ctx context.Context, url string) (*TabInfo, error) {
 		m.logger.Warn("WaitStable exceeded 10s hard cap, proceeding anyway", "url", url)
 	}
 
+	// Apply viewport override if specified (e.g. agent requested specific dimensions for testing).
+	if vp := viewportOverrideFromCtx(ctx); vp != nil {
+		if err := page.Emulate(EmulateOpts{Width: vp.Width, Height: vp.Height}); err != nil {
+			m.logger.Warn("viewport override failed", "width", vp.Width, "height", vp.Height, "error", err)
+		}
+	}
+
 	info, _ := page.Info()
 	tid := page.TargetID()
 
