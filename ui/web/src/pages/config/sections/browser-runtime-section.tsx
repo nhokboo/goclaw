@@ -147,18 +147,21 @@ export function BrowserRuntimeSection({ data, onSave, saving }: Props) {
               // "host" mode requires a local Chrome binary — not available inside Docker/K8s
               const env = status?.environment;
               const hostBlocked = m === "host" && (env === "docker" || env === "k8s");
+              const comingSoon = m === "remote" || m === "k8s";
+              const blocked = hostBlocked || comingSoon;
               const hostReason = env === "k8s"
                 ? t("tools.browserHostBlockedK8s")
                 : t("tools.browserHostBlockedDocker");
+              const reason = comingSoon ? "Soon" : (hostBlocked ? hostReason : undefined);
               return (
                 <Button
                   key={m}
                   variant={resolvedMode === m ? "default" : "outline"}
                   size="sm"
-                  className={cn("gap-1.5", hostBlocked && "opacity-50 cursor-not-allowed")}
-                  onClick={() => !hostBlocked && setMode(m)}
-                  disabled={hostBlocked}
-                  title={hostBlocked ? hostReason : undefined}
+                  className={cn("gap-1.5", blocked && "opacity-50 cursor-not-allowed")}
+                  onClick={() => !blocked && setMode(m)}
+                  disabled={blocked}
+                  title={reason}
                 >
                   <Icon className="h-3.5 w-3.5" />
                   {label}
